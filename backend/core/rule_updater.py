@@ -44,7 +44,7 @@ class RuleUpdater:
 
             self.remote_url = remote_url or (
                 "https://raw.githubusercontent.com/"
-                "YOUR_USERNAME/seckeeper-rules/main/"
+                "mannodumitru-prog/seckeeper-rules/main/"
             )
 
             self.update_interval_days = 7
@@ -362,3 +362,14 @@ if __name__ == "__main__":
     print("测试：检查更新")
     result = updater.check_update_available()
     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    # 测试4：执行真实下载更新
+    print("\n" + "=" * 50)
+    print("测试：执行规则下载")
+    
+    # 定义一个简单的进度回调函数，让输出更好看
+    def print_progress(percent, message):
+        print(f"[{percent}%] {message}")
+        
+    download_result = updater.download_updates(progress_callback=print_progress)
+    print(json.dumps(download_result, indent=2, ensure_ascii=False))
