@@ -342,6 +342,7 @@ class RuleUpdater:
             return False
 
 
+
 """ 测试；"""
 if __name__ == "__main__":
     updater = RuleUpdater()
@@ -366,10 +367,10 @@ if __name__ == "__main__":
     # 测试4：执行真实下载更新
     print("\n" + "=" * 50)
     print("测试：执行规则下载")
-    
+
     # 定义一个简单的进度回调函数，让输出更好看
     def print_progress(percent, message):
         print(f"[{percent}%] {message}")
-        
+
     download_result = updater.download_updates(progress_callback=print_progress)
     print(json.dumps(download_result, indent=2, ensure_ascii=False))

@@ -1,30 +1,58 @@
 {
-    "version": "1.0.2",
-    "last_updated": "2026-05-24T16:34:39.497738",
+    "version": "1.0.1",
+    "last_updated": "2026-05-24",
+    "update_url": "https://raw.githubusercontent.com/YOUR_USERNAME/seckeeper-rules/main/",
+    "rules_breakdown": {
+        "config_rules.json": 5,
+        "cve_rules.json": 10,
+        "file_integrity_rules.json": 4,
+        "privilege_escalation_rules.json": 2,
+        "service_rules.json": 3,
+        "threat_rules.json": 4,
+        "weak_password_rules.json": 1
+    },
     "files": {
-        "cve_rules.json": {
-            "version": "1.0.0",
-            "sha256": "13ee657120ec1c2ced3e16cda8400c3f86eddc3307d00a43c7b6b9eafad67864"
-        },
         "config_rules.json": {
-            "version": "1.0.0",
-            "sha256": "8ea0f495c13b3695b47af519299cf76b3c00b2acd33d345ba6d7ba68137091b4"
+            "version": "1.0.1",
+            "sha256": "8ea0f495c13b3695b47af519299cf76b3c00b2acd33d345ba6d7ba68137091b4",
+            "size": 2459,
+            "rule_count": 5
+        },
+        "cve_rules.json": {
+            "version": "1.0.1",
+            "sha256": "13ee657120ec1c2ced3e16cda8400c3f86eddc3307d00a43c7b6b9eafad67864",
+            "size": 10841,
+            "rule_count": 10
         },
         "file_integrity_rules.json": {
-            "version": "1.0.0",
-            "sha256": "92dc01d360c61b99d04a22b23eec3e069a45e256bace1b1e62d96bf71bf826b7"
-        },
-        "threat_rules.json": {
-            "version": "1.0.0",
-            "sha256": "9209ce71e8facca2e9de15d33aaf9777f28f034620b479417b7ff7a3cc661eab"
-        },
-        "service_rules.json": {
-            "version": "1.0.0",
-            "sha256": "daca6dae81d58e16a48df30b537d304929d30f7e12c12e2f83548b14fa1a879c"
+            "version": "1.0.1",
+            "sha256": "9c81c89dbe7693ed0367a570e74a36fab0111cfce807c2d8e0d948333a7b66f3",
+            "size": 1218,
+            "rule_count": 4
         },
         "privilege_escalation_rules.json": {
-            "version": "1.0.0",
-            "sha256": "c78bb9df0849e9342e065aedab4fc7f1aef58b96afa84d574d3dc5115e036df8"
+            "version": "1.0.1",
+            "sha256": "b1c059616f009962a653a83a340d41ba05f797269cc4a4d8f7f255750f148068",
+            "size": 1067,
+            "rule_count": 2
+        },
+        "service_rules.json": {
+            "version": "1.0.1",
+            "sha256": "daca6dae81d58e16a48df30b537d304929d30f7e12c12e2f83548b14fa1a879c",
+            "size": 2158,
+            "rule_count": 3
+        },
+        "threat_rules.json": {
+            "version": "1.0.1",
+            "sha256": "9209ce71e8facca2e9de15d33aaf9777f28f034620b479417b7ff7a3cc661eab",
+            "size": 1419,
+            "rule_count": 4
+        },
+        "weak_password_rules.json": {
+            "version": "1.0.1",
+            "sha256": "47bcfb4f21ff8c61ee08c4c862b44db6716270e2d78d987b5777981a960b700e",
+            "size": 704,
+            "rule_count": 1
         }
     }
 }
