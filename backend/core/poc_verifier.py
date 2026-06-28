@@ -4,29 +4,33 @@ PoC 验证引擎 - 负责调度和调用本地 PoC 脚本进行漏洞深度验�
 import os
 import subprocess
 import sys
-
+import platform
 
 class PocVerifier:
     """PoC 调度与验证引擎，根据 CVE 编号调用对应的本地验证脚本。"""
 
     def __init__(self):
-        # pocs 目录位于 core/rules/pocs
-        self.pocs_dir = os.path.join(os.path.dirname(__file__), "rules", "pocs")
-        # Nuclei YAML 模板目录位于 core/rules/yaml_pocs
-        self.yaml_pocs_dir = os.path.join(os.path.dirname(__file__), "rules", "yaml_pocs")
+        # 使用绝对路径锁定当前 core 目录，确保在任何地方启动都能找对位置
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # 1. 目录配置
+        self.pocs_dir = os.path.join(base_dir, "rules", "pocs")
+        self.yaml_pocs_dir = os.path.join(base_dir, "rules", "yaml_pocs")
+
+        # 2. 跨平台 Nuclei 路径自动识别引擎
+        current_os = platform.system()
+        tool_name = "nuclei.exe" if current_os == "Windows" else "nuclei"
+        self.nuclei_bin = os.path.join(base_dir, "tools", tool_name)
+
+        # 3. 调试心跳包 (用于本地开发排错)
+        print(f"[DEBUG] SecKeeper 验证引擎已初始化")
+        print(f"[DEBUG] 部署环境: {current_os}")
+        print(f"[DEBUG] 挂载 Nuclei 路径: {self.nuclei_bin}")
+        print(f"[DEBUG] 工具状态检测: {'正常就绪' if os.path.exists(self.nuclei_bin) else '未找到文件，请检查 tools 目录！'}")
 
     def verify(self, cve_id: str, target_info: dict):
         """
         验证指定 CVE 是否影响目标软件。
-
-        Args:
-            cve_id: CVE 编号，格式如 'CVE-2021-3156'
-            target_info: 目标信息字典，如 {'name': 'sudo', 'version': '1.8.31'}
-
-        Returns:
-            True  - 验证确认存在漏洞
-            False - 验证确认不存在漏洞
-            None  - 无本地脚本，保持疑似状态
         """
         # 路线 1（高优先级）：查找 Python 脚本
         poc_path = os.path.join(self.pocs_dir, f"{cve_id}.py")
@@ -63,11 +67,13 @@ class PocVerifier:
 
             try:
                 target_url = target_info.get("url", "http://127.0.0.1")
+                # [核心修改]: 使用自动识别的 self.nuclei_bin 变量，而不是写死的 "nuclei"
                 result = subprocess.run(
-                    ["nuclei", "-t", yaml_path, "-u", target_url, "-silent"],
+                    [self.nuclei_bin, "-t", yaml_path, "-u", target_url, "-silent", "-duc",  "-ni"],
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    stdin=subprocess.DEVNULL
                 )
 
                 if result.returncode == 0 and cve_id.lower() in result.stdout.lower():
@@ -103,3 +109,9 @@ if __name__ == "__main__":
     print("--- 测试用例 3 ---")
     res3 = verifier.verify("CVE-9999-9999", {"name": "test", "version": "1.0"})
     print(f"结果: {res3}\n")
+
+    # 测试用例 4：预期 True（测试 Nuclei 引擎是否能成功发包并被 Python 捕获）
+    print("--- 测试用例 4 (Nuclei 重机枪测试) ---")
+    # 我们随便打一个绝对能返回 200 OK 的大厂网址做测试（比如百度或必应）
+    res4 = verifier.verify("CVE-TEST-1234", {"name": "test-web", "url": "http://www.baidu.com"})
+    print(f"结果: {res4}\n")

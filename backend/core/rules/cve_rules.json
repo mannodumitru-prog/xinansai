@@ -13,8 +13,8 @@
             "affected_software": [
                 {
                     "name": "openssl",
-                    "version_start": "1.1.1",
-                    "version_end": "1.1.1j"
+                    "version_start_including": "1.1.1",
+                    "version_end_including": "1.1.1j"
                 }
             ],
             "remediation": "Upgrade OpenSSL to version 1.1.1k or later.",
@@ -37,8 +37,8 @@
             "affected_software": [
                 {
                     "name": "log4j-core",
-                    "version_start": "2.0-beta9",
-                    "version_end": "2.15.0"
+                    "version_start_including": "2.0-beta9",
+                    "version_end_including": "2.15.0"
                 }
             ],
             "remediation": "Upgrade Log4j to version 2.17.0 or later. Apply mitigations as described in Apache advisory.",
@@ -62,8 +62,8 @@
             "affected_software": [
                 {
                     "name": "openssh",
-                    "version_start": "8.5p1",
-                    "version_end": "9.7p1"
+                    "version_start_including": "8.5p1",
+                    "version_end_including": "9.7p1"
                 }
             ],
             "remediation": "Upgrade OpenSSH to version 9.8p1 or later. Apply available patches immediately.",
@@ -87,8 +87,8 @@
             "affected_software": [
                 {
                     "name": "sudo",
-                    "version_start": "1.8.2",
-                    "version_end": "1.9.5p1"
+                    "version_start_including": "1.8.2",
+                    "version_end_including": "1.9.5p1"
                 }
             ],
             "remediation": "Upgrade Sudo to version 1.9.5p2 or later.",
@@ -111,8 +111,8 @@
             "affected_software": [
                 {
                     "name": "linux",
-                    "version_start": "5.8",
-                    "version_end": "5.16.10"
+                    "version_start_including": "5.8",
+                    "version_end_including": "5.16.10"
                 }
             ],
             "remediation": "Upgrade Linux kernel to version 5.16.11, 5.15.25, or 5.10.102 and later.",
@@ -136,8 +136,8 @@
             "affected_software": [
                 {
                     "name": "openssl",
-                    "version_start": "1.0.1",
-                    "version_end": "1.0.1f"
+                    "version_start_including": "1.0.1",
+                    "version_end_including": "1.0.1f"
                 }
             ],
             "remediation": "Upgrade OpenSSL to version 1.0.1g or later. Revoke and reissue all SSL certificates.",
@@ -160,8 +160,8 @@
             "affected_software": [
                 {
                     "name": "polkit",
-                    "version_start": "0.105",
-                    "version_end": "0.120"
+                    "version_start_including": "0.105",
+                    "version_end_including": "0.120"
                 }
             ],
             "remediation": "Upgrade polkit to a patched version provided by your Linux distribution.",
@@ -184,8 +184,8 @@
             "affected_software": [
                 {
                     "name": "glibc",
-                    "version_start": "2.34",
-                    "version_end": "2.38"
+                    "version_start_including": "2.34",
+                    "version_end_including": "2.38"
                 }
             ],
             "remediation": "Upgrade glibc to version 2.39 or later. Apply security patches from your Linux distribution immediately.",
@@ -208,8 +208,8 @@
             "affected_software": [
                 {
                     "name": "runc",
-                    "version_start": "1.0-rc1",
-                    "version_end": "1.0-rc6"
+                    "version_start_including": "1.0-rc1",
+                    "version_end_including": "1.0-rc6"
                 }
             ],
             "remediation": "Upgrade runc to version 1.0-rc7 or later. Update Docker to the latest version that includes the patched runc.",
@@ -233,8 +233,8 @@
             "affected_software": [
                 {
                     "name": "linux",
-                    "version_start": "3.16",
-                    "version_end": "5.13.3"
+                    "version_start_including": "3.16",
+                    "version_end_including": "5.13.3"
                 }
             ],
             "remediation": "Upgrade Linux kernel to version 5.13.4 or later. Apply the Sequoia patch from your distribution.",

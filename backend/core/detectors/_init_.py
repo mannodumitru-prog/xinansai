@@ -9,17 +9,11 @@ from .cve_detector import CveDetector
 from .config_detector import ConfigDetector
 from .weak_password_detector import WeakPasswordDetector
 from .service_detector import ServiceDetector
-from .privilege_escalation_detector import PrivilegeEscalationDetector
-from .file_integrity_detector import FileIntegrityDetector
-from .threat_detector import ThreatDetector
 
 __all__ = [
     "BaseDetector",
     "CveDetector",
     "ConfigDetector",
     "WeakPasswordDetector",
-    "ServiceDetector",
-    "PrivilegeEscalationDetector",
-    "FileIntegrityDetector",
-    "ThreatDetector"
+    "ServiceDetector"
 ]

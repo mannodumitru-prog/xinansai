@@ -25,10 +25,10 @@ class RuleUpdater:
     """规则更新引擎"""
 
     def __init__(
-        self,
-        rules_dir: str = None,
-        manifest_file: str = None,
-        remote_url: str = None
+            self,
+            rules_dir: str = None,
+            manifest_file: str = None,
+            remote_url: str = None
     ):
         """初始化规则更新器"""
         try:
@@ -74,7 +74,7 @@ class RuleUpdater:
                 if last_updated:
                     last_date = datetime.fromisoformat(last_updated)
                     days_since_update = (
-                        datetime.now() - last_date
+                            datetime.now() - last_date
                     ).days
             except Exception:
                 days_since_update = 0
@@ -169,8 +169,8 @@ class RuleUpdater:
             return False
 
     def download_updates(
-        self,
-        progress_callback: Optional[Callable] = None
+            self,
+            progress_callback: Optional[Callable] = None
     ) -> Dict:
         """下载规则更新"""
         try:
@@ -252,8 +252,8 @@ class RuleUpdater:
                     if expected_sha256:
 
                         if not self._verify_checksum(
-                            tmp_path,
-                            expected_sha256
+                                tmp_path,
+                                expected_sha256
                         ):
                             print(
                                 f"❌ SHA256校验失败: {filename}"
@@ -281,9 +281,9 @@ class RuleUpdater:
 
             """to do 合并而不是全部替代 """
             with open(
-                self.manifest_file,
-                "w",
-                encoding="utf-8"
+                    self.manifest_file,
+                    "w",
+                    encoding="utf-8"
             ) as f:
                 json.dump(
                     remote_manifest,
@@ -314,9 +314,9 @@ class RuleUpdater:
             }
 
     def _verify_checksum(
-        self,
-        file_path: str,
-        expected_sha256: str
+            self,
+            file_path: str,
+            expected_sha256: str
     ) -> bool:
         """校验文件SHA256"""
         try:
@@ -325,22 +325,21 @@ class RuleUpdater:
             with open(file_path, "rb") as f:
 
                 for chunk in iter(
-                    lambda: f.read(4096),
-                    b""
+                        lambda: f.read(4096),
+                        b""
                 ):
                     sha256_hash.update(chunk)
 
             calculated_hash = sha256_hash.hexdigest()
 
             return (
-                calculated_hash.lower() ==
-                expected_sha256.lower()
+                    calculated_hash.lower() ==
+                    expected_sha256.lower()
             )
 
         except Exception as e:
             print(f"❌ SHA256校验失败: {e}")
             return False
-
 
 
 """ 测试；"""
@@ -368,9 +367,11 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("测试：执行规则下载")
 
+
     # 定义一个简单的进度回调函数，让输出更好看
     def print_progress(percent, message):
         print(f"[{percent}%] {message}")
+
 
     download_result = updater.download_updates(progress_callback=print_progress)
     print(json.dumps(download_result, indent=2, ensure_ascii=False))

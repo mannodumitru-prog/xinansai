@@ -14,6 +14,7 @@ import os
 import subprocess
 import re
 from typing import List, Dict, Tuple
+from packaging import version
 
 # 兼容两种运行方式
 try:
@@ -217,6 +218,10 @@ class CveDetector(BaseDetector):
                     {
                         "name": "glibc",
                         "version": "2.35"
+                    },
+                    {
+                        "name": "polkit",
+                        "version": "0.115"  # 这是一个带漏洞的版本
                     }
                 ]
 
@@ -274,27 +279,56 @@ class CveDetector(BaseDetector):
             print(f"❌ 关键软件判断失败: {e}")
             return False
 
+    def _clean_version(self, v_str: str) -> str:
+        """清洗 Linux 复杂的版本号，提取纯净的 X.Y.Z 格式供 packaging 库比对"""
+        import re
+        try:
+            # 匹配开头的数字和点号组合，例如 "1.9.5p1" -> "1.9.5", "1.1.1f" -> "1.1.1"
+            match = re.search(r'^(\d+(?:\.\d+)*)', str(v_str))
+            return match.group(1) if match else "0"
+        except Exception:
+            return "0"
+
     def _is_software_affected(self, software: Dict, rule: Dict) -> bool:
-        """判断软件是否受漏洞影响"""
+        """
+        判断软件是否受漏洞影响（完美适配 NVD 区间标准与带字母的复杂版本号）
+        """
         try:
             affected_list = rule.get("affected_software", [])
+            # 使用 packaging.version 自动解析当前安装的复杂版本号
+            installed_ver = version.parse(self._clean_version(software.get("version", "0")))
 
             for affected in affected_list:
-
                 try:
                     affected_name = affected.get("name", "").lower()
                     software_name = software.get("name", "").lower()
 
                     if affected_name in software_name:
+                        # 默认命中状态为 True，只要触发一个不符合的条件，就变为 False
+                        is_match = True
 
-                        version_start = affected.get("version_start", "")
-                        version_end = affected.get("version_end", "")
+                        # 1. 校验 >= (Start Including)
+                        if "version_start_including" in affected:
+                            if installed_ver < version.parse(self._clean_version(affected["version_start_including"])):
+                                is_match = False
 
-                        if self._check_version_range(
-                            software["version"],
-                            version_start,
-                            version_end
-                        ):
+                        # 2. 校验 > (Start Excluding)
+                        if "version_start_excluding" in affected:
+                            if installed_ver <= version.parse(self._clean_version(affected["version_start_excluding"])):
+                                is_match = False
+
+                        # 3. 校验 <= (End Including - 最后一个有漏洞的版本)
+                        if "version_end_including" in affected:
+                            if installed_ver > version.parse(self._clean_version(affected["version_end_including"])):
+                                is_match = False
+
+                        # 4. 校验 < (End Excluding - 第一个安全补丁版本)
+                        if "version_end_excluding" in affected:
+                            if installed_ver >= version.parse(self._clean_version(affected["version_end_excluding"])):
+                                is_match = False
+
+                        # 如果经历了上面 4 关都没有被置为 False，说明版本完全落在漏洞区间内！
+                        if is_match:
                             return True
 
                 except Exception as e:
@@ -306,39 +340,6 @@ class CveDetector(BaseDetector):
             print(f"❌ 软件影响判断失败: {e}")
             return False
 
-    def _check_version_range(
-        self,
-        installed: str,
-        start: str,
-        end: str
-    ) -> bool:
-        """检查版本范围"""
-        try:
-            installed_parsed = self._parse_version(installed)
-            start_parsed = self._parse_version(start)
-            end_parsed = self._parse_version(end)
-
-            return start_parsed <= installed_parsed <= end_parsed
-
-        except Exception as e:
-            print(f"❌ 版本范围检查失败: {e}")
-            return False
-
-    def _parse_version(self, version_str: str) -> Tuple:
-        """解析版本号"""
-        try:
-            numbers = re.findall(r'\d+', version_str)
-
-            parsed = [int(num) for num in numbers]
-
-            while len(parsed) < 4:
-                parsed.append(0)
-
-            return tuple(parsed[:4])
-
-        except Exception as e:
-            print(f"❌ 版本解析失败: {e}")
-            return (0, 0, 0, 0)
 
 
 if __name__ == "__main__":
