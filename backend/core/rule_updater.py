@@ -24,7 +24,7 @@ class RuleUpdater:
             )
             self.manifest_file = manifest_file or os.path.join(self.rules_dir, "manifest.json")
             self.remote_url = remote_url or "https://raw.githubusercontent.com/mannodumitru-prog/seckeeper-rules/main/"
-            self.allowed_extensions = ('.json', '.yaml', '.yml')
+            self.allowed_extensions = ('.json', '.yaml', '.yml', '.py')
             print(f"✅ RuleUpdater 初始化完成, 规则路径: {self.rules_dir}")
         except Exception as e:
             print(f"❌ 初始化失败: {e}")
