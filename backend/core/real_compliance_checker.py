@@ -561,17 +561,19 @@ class RealComplianceChecker:
                         })
                 
                 return checks
-                
+
         except Exception as e:
             print(f"❌ SSH配置检查错误: {e}")
-        
-            return [{
+            checks.append({
                 "name": "SSH配置检查",
                 "category": "SSH配置",
                 "passed": False,
                 "description": f"检查失败: {str(e)}",
                 "risk_level": "中"
-            }]
+            })
+
+            # 🟢 修复重点：确保无论如何最后都返回 checks 列表
+        return checks
     
     @staticmethod
     def _check_firewall() -> List[Dict[str, Any]]:
@@ -658,17 +660,19 @@ class RealComplianceChecker:
                     })
                 
                 return checks
-                
+
         except Exception as e:
             print(f"❌ 防火墙检查错误: {e}")
-        
-            return [{
+            checks.append({
                 "name": "防火墙检查",
                 "category": "防火墙",
                 "passed": False,
                 "description": f"检查失败: {str(e)}",
                 "risk_level": "高"
-            }]
+            })
+
+            # 🟢 修复重点：确保最后返回 checks
+        return checks
     
     @staticmethod
     def _check_system_security() -> List[Dict[str, Any]]:
