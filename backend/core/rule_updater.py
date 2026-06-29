@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-规则更新引擎模块 (架构师稳健版)
+规则更新引擎模块 (架构师稳健终极版)
 功能：
 1. 自动处理子目录 (如 yaml_pocs/)
-2. 内置扩展名白名单安全过滤
-3. 智能SHA256校验与原子性更新
+2. 内置扩展名白名单安全过滤 (.py 穿甲弹已解封)
+3. 智能双条件触发（版本号 OR 哈希值任一变动即更新）
+4. 严谨幂等台账（无新子弹落盘，绝不篡改清单印章）
 """
 
 import os
@@ -18,7 +19,6 @@ from typing import Dict, List, Optional, Callable
 class RuleUpdater:
     def __init__(self, rules_dir: str = None, manifest_file: str = None, remote_url: str = None):
         try:
-            # 自动锚定到当前文件所在目录的上一级 rules 文件夹
             self.rules_dir = rules_dir or os.path.abspath(
                 os.path.join(os.path.dirname(__file__), "rules")
             )
@@ -30,7 +30,7 @@ class RuleUpdater:
             print(f"❌ 初始化失败: {e}")
 
     def download_updates(self, progress_callback: Optional[Callable] = None) -> Dict:
-        """支持子目录下载与安全过滤的更新逻辑"""
+        """支持子目录下载、安全过滤与幂等台账的更新逻辑"""
         try:
             update_info = self.check_update_available()
             if not update_info.get("update_available", False):
@@ -74,16 +74,33 @@ class RuleUpdater:
                 updated_files.append(filename)
                 print(f"✅ 更新成功: {filename}")
 
-            # 更新本地清单
-            with open(self.manifest_file, "w", encoding="utf-8") as f:
-                json.dump(remote_manifest, f, indent=4, ensure_ascii=False)
-            
+            # 【核心架构修正：严禁无脑全量覆盖本地清单！】
+            if len(updated_files) > 0:
+                local_m = {}
+                if os.path.exists(self.manifest_file):
+                    with open(self.manifest_file, "r", encoding="utf-8") as f:
+                        local_m = json.load(f)
+
+                if "files" not in local_m:
+                    local_m["files"] = {}
+                for uf in updated_files:
+                    local_m["files"][uf] = remote_manifest["files"][uf]
+
+                local_m["version"] = remote_manifest.get("version", "1.0.0")
+
+                with open(self.manifest_file, "w", encoding="utf-8") as f:
+                    json.dump(local_m, f, indent=4, ensure_ascii=False)
+
+                print(f"📦 本地台账清单已同步变更至: v{local_m['version']}")
+            else:
+                print("💤 本轮无新载荷落盘，本地台账清单保持原状。")
+
             return {"success": True, "updated_files": updated_files}
         except Exception as e:
             return {"success": False, "message": str(e)}
 
     def check_update_available(self) -> Dict:
-        """检查远程更新"""
+        """检查远程更新（双保险触发机制）"""
         try:
             local_manifest = {}
             if os.path.exists(self.manifest_file):
@@ -97,7 +114,10 @@ class RuleUpdater:
             files_to_update = []
             for filename, remote_info in remote_manifest.get("files", {}).items():
                 local_info = local_manifest.get("files", {}).get(filename, {})
-                if local_info.get("version") != remote_info.get("version"):
+                
+                # 双条件触发：只要版本号不同，或者哈希值不同，立刻判定需要更新！
+                if (local_info.get("version") != remote_info.get("version")) or \
+                   (local_info.get("sha256") != remote_info.get("sha256")):
                     files_to_update.append(filename)
             
             return {"update_available": len(files_to_update) > 0, "files_to_update": files_to_update}
