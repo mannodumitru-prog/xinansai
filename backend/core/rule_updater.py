@@ -20,7 +20,7 @@ class RuleUpdater:
         try:
             # 自动锚定到当前文件所在目录的上一级 rules 文件夹
             self.rules_dir = rules_dir or os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "rules")
+                os.path.join(os.path.dirname(__file__), "rules")
             )
             self.manifest_file = manifest_file or os.path.join(self.rules_dir, "manifest.json")
             self.remote_url = remote_url or "https://raw.githubusercontent.com/mannodumitru-prog/seckeeper-rules/main/"
