@@ -13,6 +13,7 @@ import time
 import logging
 from datetime import datetime
 from flask import Flask, request, jsonify, send_file, make_response
+from werkzeug.utils import secure_filename
 from flask_cors import CORS
 import traceback
 
@@ -107,26 +108,173 @@ class ThreadSafeScanManager:
             return True
 
 
+def _empty_vulnerability_payload():
+    """返回兼容前端的空漏洞结构。"""
+    return {
+        "scan_summary": {
+            "total_vulnerabilities": 0,
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "verified": 0,
+            "unverified": 0,
+            "needs_manual_check": 0,
+            "local_verify": 0,
+            "network_verify": 0,
+            "version_match": 0
+        },
+        "details": [],
+        "verification_summary": {
+            "by_status": {"verified": 0, "unverified": 0, "needs_manual_check": 0},
+            "by_method": {"local": 0, "network": 0, "version": 0, "unknown": 0},
+            "by_safety": {}
+        }
+    }
+
+
+def _build_vulnerability_summary(vulnerabilities):
+    """基于漏洞明细生成风险与双核验证统计。"""
+    summary = _empty_vulnerability_payload()["scan_summary"].copy()
+    verification_summary = _empty_vulnerability_payload()["verification_summary"]
+
+    summary["total_vulnerabilities"] = len(vulnerabilities)
+
+    for vuln in vulnerabilities:
+        severity = str(vuln.get("severity", "low")).lower()
+        if severity in ("critical", "high", "medium", "low"):
+            summary[severity] += 1
+
+        status = str(vuln.get("verification_status", "unverified")).lower()
+        if status not in verification_summary["by_status"]:
+            verification_summary["by_status"][status] = 0
+        verification_summary["by_status"][status] += 1
+
+        if status in summary:
+            summary[status] += 1
+
+        method = str(vuln.get("verification_method", "unknown")).lower()
+        if method not in verification_summary["by_method"]:
+            verification_summary["by_method"][method] = 0
+        verification_summary["by_method"][method] += 1
+
+        if method == "local":
+            summary["local_verify"] += 1
+        elif method == "network":
+            summary["network_verify"] += 1
+        elif method in ("version", "version_match"):
+            summary["version_match"] += 1
+
+        safety = str(vuln.get("verification_safety", "unknown")).lower()
+        verification_summary["by_safety"][safety] = verification_summary["by_safety"].get(safety, 0) + 1
+
+    return summary, verification_summary
+
+
 def aggregate_cve_results(raw_vulnerabilities):
+    """
+    聚合漏洞结果，同时保留验证方式、验证类型等 Knowledge Metadata。
+
+    兼容旧前端：继续返回 scan_summary + details。
+    增强新版前端：增加 verification_summary。
+    """
     aggregated = {}
-    for vuln in raw_vulnerabilities:
-        c_id = vuln.get('vuln_id')
+
+    for vuln in raw_vulnerabilities or []:
+        c_id = vuln.get('vuln_id') or vuln.get('id') or f"UNKNOWN-{len(aggregated) + 1}"
+
         if c_id not in aggregated:
             aggregated[c_id] = vuln.copy()
-            aggregated[c_id]['affected_targets'] = [vuln.get('affected_target')]
+            target = vuln.get('affected_target')
+            aggregated[c_id]['affected_targets'] = [target] if target else []
             aggregated[c_id].pop('affected_target', None)
         else:
-            aggregated[c_id]['affected_targets'].append(vuln.get('affected_target'))
+            target = vuln.get('affected_target')
+            if target:
+                aggregated[c_id]['affected_targets'].append(target)
+
+            # 多个目标命中同一漏洞时，以最高可信状态为准。
             if vuln.get('verification_status') == 'verified':
                 aggregated[c_id]['verification_status'] = 'verified'
-                aggregated[c_id]['title'] = vuln.get('title').replace('🟡[疑似漏洞]', '🔴[实锤漏洞]')
+                old_title = aggregated[c_id].get('title') or vuln.get('title') or c_id
+                aggregated[c_id]['title'] = old_title.replace('🟡[疑似漏洞]', '🔴[实锤漏洞]')
 
-    summary = {"total_vulnerabilities": len(aggregated), "critical": 0, "high": 0, "medium": 0, "low": 0}
-    for v in aggregated.values():
-        sev = v.get('severity', 'low').lower()
-        if sev in summary: summary[sev] += 1
+            # 保留更具体的验证元数据。
+            for key in ('verification_method', 'verification_engine', 'verification_safety', 'offline_supported'):
+                if vuln.get(key) and not aggregated[c_id].get(key):
+                    aggregated[c_id][key] = vuln.get(key)
 
-    return {"scan_summary": summary, "details": list(aggregated.values())}
+    details = list(aggregated.values())
+    summary, verification_summary = _build_vulnerability_summary(details)
+
+    return {
+        "scan_summary": summary,
+        "summary": summary,  # 兼容新版 Core 命名
+        "details": details,
+        "vulnerabilities": details,
+        "verification_summary": verification_summary
+    }
+
+
+def _extract_xinchuang_summary(compliance_data):
+    """从合规检查结果中提取信创专项统计。"""
+    if not isinstance(compliance_data, dict):
+        return {}
+
+    summary = compliance_data.get("xinchuang_summary")
+    if isinstance(summary, dict):
+        return summary
+
+    # 兼容旧结构：从检查项文本中做轻量统计。
+    keywords = {
+        "kylin": ["银河麒麟", "kylin", "麒麟"],
+        "uos": ["统信", "uos", "deepin"],
+        "dameng": ["达梦", "dm8", "dameng"],
+        "kingbase": ["金仓", "kingbase"],
+        "tongweb": ["东方通", "tongweb"]
+    }
+
+    results = compliance_data.get("results") or compliance_data.get("checks") or []
+    computed = {k: 0 for k in keywords}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        text = json.dumps(item, ensure_ascii=False).lower()
+        for key, words in keywords.items():
+            if any(w.lower() in text for w in words):
+                computed[key] += 1
+
+    computed["total"] = sum(computed.values())
+    return computed
+
+
+def _build_scan_overview(scan_result):
+    """为 Dashboard 统一生成概览数据。"""
+    assets = scan_result.get('assets', {}) if isinstance(scan_result, dict) else {}
+    compliance = scan_result.get('compliance', {}) if isinstance(scan_result, dict) else {}
+    vuln_data = scan_result.get('vulnerabilities', {}) if isinstance(scan_result, dict) else {}
+
+    vuln_summary = vuln_data.get('scan_summary') or vuln_data.get('summary') or _empty_vulnerability_payload()["scan_summary"]
+    compliance_summary = compliance.get('summary', {}) if isinstance(compliance, dict) else {}
+
+    return {
+        "assets": {
+            "software_count": len(assets.get('software', [])) if isinstance(assets, dict) else 0,
+            "service_count": len(assets.get('services', [])) if isinstance(assets, dict) else 0,
+            "xinchuang_os": assets.get('system_info', {}).get('xinchuang_os') if isinstance(assets, dict) else None
+        },
+        "compliance": {
+            "total_checks": compliance_summary.get('total', 0),
+            "passed_checks": compliance_summary.get('passed', 0),
+            "failed_checks": compliance_summary.get('failed', 0),
+            "compliance_rate": compliance_summary.get('compliance_rate', 0),
+            "xinchuang_summary": _extract_xinchuang_summary(compliance)
+        },
+        "vulnerabilities": vuln_summary,
+        "verification": vuln_data.get('verification_summary', _empty_vulnerability_payload()["verification_summary"]),
+        "system_health": "healthy" if vuln_summary.get('critical', 0) == 0 else "warning"
+    }
+
 
 
 scan_manager = ThreadSafeScanManager()
@@ -135,52 +283,62 @@ scan_results = {}
 
 def background_scan(scan_id, callback):
     try:
-        print(f"🚀 后台扫描开始: {scan_id}")
+        logger.info(f"后台扫描开始: {scan_id}")
 
-        def run_new_cve_scan():
+        def run_vulnerability_scan():
             scan_data = vulnerability_scanner.run_souffle_scan()
             raw_vulnerabilities = scan_data.get('vulnerabilities', [])
-            return aggregate_cve_results(raw_vulnerabilities)
+            aggregated = aggregate_cve_results(raw_vulnerabilities)
+
+            # 透传 Core 扫描器提供的诊断信息，便于前端/报告展示。
+            for key in ('success', 'status', 'scan_mode', 'detectors_used', 'detector_metrics', 'errors', 'warnings'):
+                if key in scan_data:
+                    aggregated[key] = scan_data[key]
+            return aggregated
 
         steps = [
             ("资产清点", asset_scanner.scan_assets, 25),
             ("合规检查", compliance_checker.run_compliance_checks, 50),
-            ("漏洞扫描", run_new_cve_scan, 75),
-            ("生成报告", None, 100)
+            ("漏洞扫描", run_vulnerability_scan, 80),
+            ("结果汇总", None, 100)
         ]
 
         results = {}
+        step_errors = []
+
         for step_name, step_func, progress in steps:
             scan_manager.update_progress(step_name, progress)
-            print(f"🔧 执行步骤: {step_name}")
+            logger.info(f"执行步骤: {step_name}")
             if step_func:
                 try:
                     step_result = step_func()
                     results[step_name] = step_result
-                    print(f"✅ 步骤完成: {step_name}")
-                    time.sleep(2)
+                    logger.info(f"步骤完成: {step_name}")
                 except Exception as e:
-                    print(f"❌ 步骤失败: {step_name}, 错误: {e}")
-                    results[step_name] = {"error": str(e)}
+                    logger.exception(f"步骤失败: {step_name}")
+                    step_errors.append({"step": step_name, "error": str(e)})
+                    results[step_name] = {"success": False, "error": str(e)}
 
         scan_result = {
+            "success": len(step_errors) == 0,
+            "status": "completed" if len(step_errors) == 0 else "partial_success",
             "scan_id": scan_id,
             "timestamp": datetime.now().isoformat(),
             "assets": results.get("资产清点", {}),
             "compliance": results.get("合规检查", {}),
-            "vulnerabilities": results.get("漏洞扫描", {}),
-            "status": "completed"
+            "vulnerabilities": results.get("漏洞扫描", _empty_vulnerability_payload()),
+            "errors": step_errors
         }
+        scan_result["overview"] = _build_scan_overview(scan_result)
 
         scan_manager.complete_scan()
-        print(f"🎉 后台扫描完成: {scan_id}")
+        logger.info(f"后台扫描完成: {scan_id}")
         callback(scan_result)
 
     except Exception as e:
-        print(f"❌ 后台扫描异常: {e}")
-        traceback.print_exc()
+        logger.exception("后台扫描异常")
         scan_manager.complete_scan()
-        callback({"error": str(e)})
+        callback({"success": False, "status": "failed", "error": str(e), "scan_id": scan_id})
 
 
 @app.route('/api/assets', methods=['GET'])
@@ -219,7 +377,7 @@ def get_vulnerabilities():
         else:
             return jsonify({
                 "success": True,
-                "data": {"scan_summary": {"total_vulnerabilities": 0}, "details": []},
+                "data": _empty_vulnerability_payload(),
                 "timestamp": datetime.now().isoformat()
             })
     except Exception as e:
@@ -236,29 +394,13 @@ def get_dashboard():
 
         if current_id and current_id in scan_results:
             res = scan_results[current_id]
-            vuln_data = res.get('vulnerabilities', {})
-            overview = {
-                "assets": {
-                    "software_count": len(res.get('assets', {}).get('software', [])),
-                    "service_count": len(res.get('assets', {}).get('services', []))
-                },
-                "compliance": {
-                    "total_checks": res.get('compliance', {}).get('summary', {}).get('total', 0),
-                    "passed_checks": res.get('compliance', {}).get('summary', {}).get('passed', 0),
-                    "compliance_rate": res.get('compliance', {}).get('summary', {}).get('compliance_rate', 0)
-                },
-                "vulnerabilities": vuln_data.get('scan_summary', {
-                    "total_vulnerabilities": 0, "critical": 0, "high": 0, "medium": 0, "low": 0
-                }),
-                "system_health": "healthy" if vuln_data.get('scan_summary', {}).get('critical', 0) == 0 else "warning"
-            }
+            overview = res.get('overview') or _build_scan_overview(res)
         else:
-            overview = {
-                "assets": {"software_count": 0, "service_count": 0},
-                "compliance": {"total_checks": 0, "passed_checks": 0, "compliance_rate": 0},
-                "vulnerabilities": {"total_vulnerabilities": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
-                "system_health": "healthy"
-            }
+            overview = _build_scan_overview({
+                "assets": {},
+                "compliance": {},
+                "vulnerabilities": _empty_vulnerability_payload()
+            })
 
         return jsonify({
             "success": True,
@@ -285,7 +427,11 @@ def get_rule_status():
                 # 假设 manifest.json 里有 {"version": "xxx"} 的字段
                 return jsonify({
                     "success": True,
-                    "data": {"db_version": data.get("version", "内置默认版")}
+                    "data": {
+                        "db_version": data.get("version", "内置默认版"),
+                        "last_updated": data.get("last_updated"),
+                        "file_count": len(data.get("files", {})) if isinstance(data.get("files", {}), dict) else 0
+                    }
                 })
 
         return jsonify({
@@ -313,6 +459,41 @@ def perform_rule_update():
         return jsonify({"success": result.get("success", False), "data": result})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+
+@app.route('/api/rules/import-offline', methods=['POST'])
+def import_offline_rules():
+    """离线导入规则包：前端上传 zip，后端调用 RuleUpdater.import_offline_package。"""
+    package_path = None
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "未上传规则包文件"}), 400
+
+        file = request.files['file']
+        if not file or not file.filename:
+            return jsonify({"success": False, "error": "规则包文件名为空"}), 400
+
+        filename = secure_filename(file.filename)
+        if not filename.lower().endswith('.zip'):
+            return jsonify({"success": False, "error": "仅支持 zip 格式离线规则包"}), 400
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
+            package_path = tmp_file.name
+            file.save(package_path)
+
+        if not hasattr(rule_updater, 'import_offline_package'):
+            return jsonify({"success": False, "error": "当前 RuleUpdater 不支持离线导入接口"}), 500
+
+        result = rule_updater.import_offline_package(package_path)
+        return jsonify({"success": result.get("success", False), "data": result})
+
+    except Exception as e:
+        logger.exception("离线规则包导入失败")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if package_path and os.path.exists(package_path):
+            os.unlink(package_path)
 
 
 @app.route('/api/scan', methods=['POST'])
@@ -349,25 +530,24 @@ def get_scan_status():
 @app.route('/api/scan/<scan_id>/status', methods=['GET'])
 def get_specific_scan_status(scan_id):
     status = scan_manager.get_status()
-    if status['current_scan_id'] == scan_id:
-        if status['is_scanning']:
-            return jsonify({
-                "success": True,
-                "data": {"scan_id": scan_id, "status": "running", "progress": status['progress'],
-                         "current_step": status['current_step']}
-            })
-        else:
-            result = scan_results.get(scan_id)
-            if result:
-                return jsonify({"success": True, "data": {"scan_id": scan_id, "status": "completed", "result": result}})
 
-            result = scan_results.get(scan_id)
-            if result:
-                return jsonify({"success": True, "data": {"scan_id": scan_id, "status": "completed", "result": result}})
-            else:
-                return jsonify({"success": False, "error": "扫描结果未找到"}), 404
-    else:
-        return jsonify({"success": False, "error": "扫描ID不匹配或扫描已结束"}), 404
+    if status.get('current_scan_id') == scan_id and status.get('is_scanning'):
+        return jsonify({
+            "success": True,
+            "data": {
+                "scan_id": scan_id,
+                "status": "running",
+                "progress": status.get('progress', 0),
+                "current_step": status.get('current_step', '')
+            }
+        })
+
+    result = scan_results.get(scan_id)
+    if result:
+        return jsonify({"success": True, "data": {"scan_id": scan_id, "status": result.get('status', 'completed'), "result": result}})
+
+    return jsonify({"success": False, "error": "扫描结果未找到"}), 404
+
 
 
 

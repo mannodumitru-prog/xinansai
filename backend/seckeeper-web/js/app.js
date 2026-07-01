@@ -47,6 +47,17 @@ class SecKeeperAPI {
     async getRuleStatus() { return await this.request('/api/rules/status'); }
     async checkRuleUpdate() { return await this.request('/api/rules/check'); }
     async executeRuleUpdate() { return await this.request('/api/rules/update', { method: 'POST' }); }
+    async importOfflineRules(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch(`${this.baseURL}/api/rules/import-offline`, { method: 'POST', body: formData });
+        if (!response.ok) {
+            let errorMsg = `HTTP ${response.status} 错误`;
+            try { const errData = await response.json(); if (errData && errData.error) errorMsg = errData.error; } catch (e) {}
+            throw new Error(errorMsg);
+        }
+        return await response.json();
+    }
     async getSystemInfo() { return await this.request('/api/dashboard'); }
     async getAssets() { return await this.request('/api/assets'); }
     async getComplianceResults() { return await this.request('/api/compliance'); }
@@ -67,7 +78,10 @@ class SecKeeperApp {
             software: [],
             services: [],
             compliance: [],
-            vulnerabilities: []
+            vulnerabilities: [],
+            verificationSummary: {},
+            xinchuangSummary: {},
+            lastScanResult: null
         };
         this.scanState = {
             isScanning: false,
@@ -119,7 +133,9 @@ class SecKeeperApp {
             this.currentData.software = [];
             this.currentData.services = [];
             this.currentData.compliance = { summary: { total: 0, passed: 0, compliance_rate: 0 }, checks: [] };
-            this.currentData.vulnerabilities = { scan_summary: { total_vulnerabilities: 0 }, details: [] };
+            this.currentData.vulnerabilities = { scan_summary: { total_vulnerabilities: 0 }, details: [], verification_summary: {} };
+            this.currentData.verificationSummary = {};
+            this.currentData.xinchuangSummary = {};
 
             const resultsPanel = document.getElementById('results-panel');
             const blankPlaceholder = document.getElementById('blank-placeholder');
@@ -136,8 +152,7 @@ class SecKeeperApp {
         const header = document.querySelector('.header');
         const banner = document.createElement('div');
         banner.id = 'history-banner';
-        banner.style.cssText = 'background: linear-gradient(90deg, rgba(0,65,120,0.82), rgba(0,95,165,0.75), rgba(0,65,120,0.82)); color: #e0eeff; padding: 12px; text-align: center; font-size: 15px; font-weight: 500; animation: slideIn 0.5s; border-bottom: 1px solid rgba(0,200,255,0.2);';
-        banner.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 当前显示的是历史扫描记录。系统状态可能已发生改变，建议立即点击【一键全面扫描】获取最新安全态势。';
+        banner.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 当前显示的是 <strong>历史扫描记录</strong>。系统状态可能已发生改变，建议立即点击【一键全面扫描】获取最新安全态势。';
         header.insertAdjacentElement('afterend', banner);
     }
 
@@ -156,6 +171,17 @@ class SecKeeperApp {
         const updateBtn = document.getElementById('update-rules-btn');
         if (updateBtn) {
             updateBtn.addEventListener('click', () => this.handleRuleUpdate());
+        }
+
+        const offlineBtn = document.getElementById('import-offline-rules-btn');
+        const offlineInput = document.getElementById('offline-rule-package');
+        if (offlineBtn && offlineInput) {
+            offlineBtn.addEventListener('click', () => offlineInput.click());
+            offlineInput.addEventListener('change', () => {
+                const file = offlineInput.files && offlineInput.files[0];
+                if (file) this.handleOfflineRuleImport(file);
+                offlineInput.value = '';
+            });
         }
 
         document.addEventListener('keydown', (e) => {
@@ -201,7 +227,12 @@ class SecKeeperApp {
             const res = await this.api.getRuleStatus();
             if (res.success && res.data) {
                 const versionEl = document.getElementById('rule-version');
-                if (versionEl) versionEl.textContent = 'v' + res.data.db_version;
+                if (versionEl) {
+                    versionEl.textContent = 'v' + res.data.db_version;
+                    const fileCount = res.data.file_count ? ` · ${res.data.file_count} files` : '';
+                    const updated = res.data.last_updated ? ` · ${res.data.last_updated}` : '';
+                    versionEl.title = `规则库版本 ${res.data.db_version}${fileCount}${updated}`;
+                }
             }
         } catch (e) {
             console.error("无法获取规则库状态:", e);
@@ -237,6 +268,40 @@ class SecKeeperApp {
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalText;
+        }
+    }
+
+    async handleOfflineRuleImport(file) {
+        if (!file) return;
+        const isZip = file.name.toLowerCase().endsWith('.zip');
+        if (!isZip) {
+            this.showNotification('离线规则包必须是 .zip 文件', 'warning');
+            return;
+        }
+
+        const btn = document.getElementById('import-offline-rules-btn');
+        const originalText = btn ? btn.innerHTML : '';
+        try {
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 导入中...';
+            }
+            this.showNotification('正在导入离线规则包，请稍候...', 'info');
+            const res = await this.api.importOfflineRules(file);
+            if (res.success) {
+                const updated = res.data?.updated_files || res.data?.imported_files || [];
+                this.showNotification(`离线规则包导入成功${updated.length ? `，更新 ${updated.length} 个文件` : ''}`, 'success');
+                await this.loadRuleStatus();
+            } else {
+                throw new Error(res.error || res.data?.message || '离线规则包导入失败');
+            }
+        } catch (err) {
+            this.showNotification('离线规则导入失败: ' + err.message, 'error');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+            }
         }
     }
 
@@ -282,6 +347,7 @@ class SecKeeperApp {
                                 this.showNotification('<i class="fas fa-check-circle"></i> 扫描完成，正在渲染结果', 'success');
 
                                 const finalResult = statusData.result || {};
+                                this.currentData.lastScanResult = finalResult;
 
                                 if(finalResult.assets) {
                                     this.currentData.software = finalResult.assets.software || [];
@@ -291,8 +357,14 @@ class SecKeeperApp {
                                         this.currentData.systemInfo = finalResult.assets.system_info;
                                     }
                                 }
-                                if(finalResult.compliance) this.currentData.compliance = finalResult.compliance;
-                                if(finalResult.vulnerabilities) this.currentData.vulnerabilities = finalResult.vulnerabilities;
+                                if(finalResult.compliance) {
+                                    this.currentData.compliance = finalResult.compliance;
+                                    this.currentData.xinchuangSummary = finalResult.compliance.xinchuang_summary || {};
+                                }
+                                if(finalResult.vulnerabilities) {
+                                    this.currentData.vulnerabilities = finalResult.vulnerabilities;
+                                    this.currentData.verificationSummary = finalResult.vulnerabilities.verification_summary || {};
+                                }
 
                                 try {
                                     localStorage.setItem('seckeeper_history', JSON.stringify(this.currentData));
@@ -344,25 +416,38 @@ class SecKeeperApp {
         const softwareCount = this.currentData.software?.length || 0;
         const serviceCount = this.currentData.services?.length || 0;
         const complianceRate = this.currentData.compliance?.summary?.compliance_rate || 0;
+        const vulnSummary = this.currentData.vulnerabilities?.scan_summary || this.currentData.vulnerabilities?.summary || {};
+        const verificationSummary = this.getVerificationSummary();
 
-        let highRiskCount = 0;
-        const vulns = this.currentData.vulnerabilities?.details || this.currentData.vulnerabilities?.vulnerabilities || [];
-        vulns.forEach(v => {
-            if ((v.severity || v.level) === 'high' || (v.severity || v.level) === 'critical') highRiskCount++;
-        });
+        let highRiskCount = (vulnSummary.critical || 0) + (vulnSummary.high || 0);
+        if (!highRiskCount) {
+            const vulns = this.getVulnerabilityList();
+            vulns.forEach(v => {
+                const sev = (v.severity || v.level || '').toLowerCase();
+                if (sev === 'high' || sev === 'critical') highRiskCount++;
+            });
+        }
 
         document.getElementById('total-assets').textContent = softwareCount + serviceCount;
         document.getElementById('compliance-rate').textContent = complianceRate + '%';
         document.getElementById('high-risk-count').textContent = highRiskCount;
+        this.currentData.verificationSummary = verificationSummary;
     }
 
     displayRealTimeStatus() {
         const isHealthy = document.getElementById('high-risk-count').textContent === "0";
+        const verificationSummary = this.getVerificationSummary();
+        const xinchuangSummary = this.getXinchuangSummary();
+        const xinchuangTotal = Object.values(xinchuangSummary).reduce((sum, value) => sum + (Number(value) || 0), 0);
         const statusData = [
             { icon: 'microchip', label: '系统状态', value: isHealthy ? '健康' : '异常', status: isHealthy ? 'normal' : 'warning' },
             { icon: 'box', label: '软件数量', value: this.currentData.software.length || 0, status: 'normal' },
             { icon: 'cogs', label: '服务数量', value: this.currentData.services.length || 0, status: 'normal' },
-            { icon: 'shield-alt', label: '合规率', value: document.getElementById('compliance-rate').textContent, status: 'normal' }
+            { icon: 'shield-alt', label: '合规率', value: document.getElementById('compliance-rate').textContent, status: 'normal' },
+            { icon: 'check-double', label: '已验证漏洞', value: verificationSummary.verified || 0, status: (verificationSummary.verified || 0) > 0 ? 'warning' : 'normal' },
+            { icon: 'server', label: 'Network Verify', value: verificationSummary.network || 0, status: 'normal' },
+            { icon: 'terminal', label: 'Local Verify', value: verificationSummary.local || 0, status: 'normal' },
+            { icon: 'landmark', label: '信创专项命中', value: xinchuangTotal || 0, status: xinchuangTotal > 0 ? 'warning' : 'normal' }
         ];
 
         const statusGrid = document.getElementById('real-time-status');
@@ -395,7 +480,7 @@ class SecKeeperApp {
 
         let softwareHTML = `
             <div style="margin-bottom: 25px;">
-                <h4 style="color: #2c3e50; margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                <h4 class="section-title">
                     <i class="fas fa-box"></i> 已安装软件 (${this.currentData.software.length}个)
                 </h4>
                 <table class="data-table">
@@ -403,7 +488,7 @@ class SecKeeperApp {
                     <tbody>
                         ${this.currentData.software.slice(0, 100).map(pkg => `
                             <tr>
-                                <td><i class="fas fa-cube" style="color: #3498db; margin-right: 8px;"></i>${pkg.name || pkg.package_name || '未知软件'}</td>
+                                <td><i class="fas fa-cube" style="color: var(--accent); margin-right: 8px;"></i>${pkg.name || pkg.package_name || '未知软件'}</td>
                                 <td>${pkg.version || pkg.package_version || '未知'}</td>
                                 <td><span class="status-indicator status-safe"><i class="fas fa-check"></i> 已安装</span></td>
                             </tr>
@@ -419,26 +504,71 @@ class SecKeeperApp {
         const complianceTab = document.getElementById('compliance');
         const data = this.currentData.compliance || {};
         const summary = data.summary || {};
-        const checks = data.checks || data.details || [];
+        const checks = data.checks || data.results || data.details || [];
+        const xinchuangSummary = this.getXinchuangSummary();
+        const categories = data.categories || summary.categories || {};
 
         if (checks.length === 0) {
-            complianceTab.innerHTML = '<div class="card"><div style="text-align:center; padding:40px; color:#7f8c8d;"><i class="fas fa-shield-alt" style="font-size:48px; margin-bottom:20px;"></i><h3>暂无合规检查数据</h3><p>请点击一键扫描获取最新状态</p></div></div>';
+            complianceTab.innerHTML = '<div class="card"><div class="empty-state"><i class="fas fa-shield-alt"></i><h3>暂无合规检查数据</h3><p>请点击一键扫描获取最新状态</p></div></div>';
             return;
         }
 
-        let html = `<div class="card"><h3><i class="fas fa-shield-alt"></i> 安全合规检查</h3><p style="margin-bottom: 20px;">共检查 <strong>${summary.total || 0}</strong> 项，通过率: <strong>${summary.compliance_rate || 0}%</strong></p>`;
+        const failed = Math.max(0, (summary.total || checks.length || 0) - (summary.passed || 0));
+        const xinchuangTotal = Object.values(xinchuangSummary).reduce((sum, value) => sum + (Number(value) || 0), 0);
+        const xinchuangLabels = {
+            kylin: '银河麒麟', uos: '统信 UOS', dameng: '达梦', kingbase: '人大金仓', tongweb: '东方通 TongWeb'
+        };
 
+        let html = `
+            <div class="card" style="margin-bottom: 20px;">
+                <h3><i class="fas fa-shield-alt"></i> 安全合规检查</h3>
+                <div class="status-grid">
+                    <div class="status-item normal"><div class="status-icon"><i class="fas fa-list-check"></i></div><div class="status-info"><div class="status-label">检查总数</div><div class="status-value">${summary.total || checks.length || 0}</div></div></div>
+                    <div class="status-item normal"><div class="status-icon"><i class="fas fa-check-circle"></i></div><div class="status-info"><div class="status-label">通过项</div><div class="status-value">${summary.passed || 0}</div></div></div>
+                    <div class="status-item ${failed > 0 ? 'warning' : 'normal'}"><div class="status-icon"><i class="fas fa-triangle-exclamation"></i></div><div class="status-info"><div class="status-label">未通过项</div><div class="status-value">${failed}</div></div></div>
+                    <div class="status-item ${xinchuangTotal > 0 ? 'warning' : 'normal'}"><div class="status-icon"><i class="fas fa-landmark"></i></div><div class="status-info"><div class="status-label">信创专项命中</div><div class="status-value">${xinchuangTotal}</div></div></div>
+                </div>
+            </div>`;
+
+        html += `
+            <div class="card" style="margin-bottom: 20px;">
+                <h3><i class="fas fa-flag"></i> 信创专项基线</h3>
+                <p style="margin-bottom: 14px; color: var(--text-sec);">该区域来自合规检查中的 config_rules 规则，不是独立第四模块。</p>
+                <div class="status-grid">
+                    ${Object.entries(xinchuangLabels).map(([key, label]) => `
+                        <div class="status-item ${(xinchuangSummary[key] || 0) > 0 ? 'warning' : 'normal'}">
+                            <div class="status-icon"><i class="fas fa-${key === 'dameng' || key === 'kingbase' ? 'database' : 'server'}"></i></div>
+                            <div class="status-info"><div class="status-label">${label}</div><div class="status-value">${xinchuangSummary[key] || 0}</div></div>
+                        </div>`).join('')}
+                </div>
+            </div>`;
+
+        if (Object.keys(categories).length > 0) {
+            html += `<div class="card" style="margin-bottom: 20px;"><h3><i class="fas fa-layer-group"></i> 分类统计</h3><div class="status-grid">`;
+            Object.entries(categories).forEach(([name, value]) => {
+                const count = typeof value === 'object' ? (value.total || value.failed || 0) : value;
+                html += `<div class="status-item normal"><div class="status-icon"><i class="fas fa-tag"></i></div><div class="status-info"><div class="status-label">${name}</div><div class="status-value">${count}</div></div></div>`;
+            });
+            html += `</div></div>`;
+        }
+
+        html += `<div class="card"><h3><i class="fas fa-clipboard-check"></i> 合规检查明细</h3>`;
         checks.forEach(item => {
-            const isPassed = item.passed;
+            const isPassed = item.passed === true || item.status === 'passed';
             const statusColor = isPassed ? '#27ae60' : '#e74c3c';
+            const isXinchuang = item.xinchuang === true || item.is_xinchuang === true || /麒麟|kylin|统信|uos|达梦|dameng|金仓|kingbase|tongweb|东方通/i.test(`${item.name || item.check || item.check_name || ''} ${item.category || ''} ${item.description || ''}`);
             html += `
-                <div style="padding: 16px; margin: 12px 0; border-radius: 8px; border-left: 4px solid ${statusColor}; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <strong>${item.name || item.check}</strong>
-                        <span style="color: ${statusColor}; font-weight: bold;"><i class="fas ${isPassed ? 'fa-check-circle' : 'fa-times-circle'}"></i> ${isPassed ? '通过' : '失败'}</span>
+                <div class="tech-panel ${isPassed ? 'status-pass' : 'status-fail'}">
+                    <div class="tech-panel-header">
+                        <strong class="tech-panel-title">${item.name || item.check || item.check_name || '未命名检查项'}</strong>
+                        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                            ${isXinchuang ? '<span class="tech-chip"><i class="fas fa-landmark"></i> 信创专项</span>' : ''}
+                            <span class="tech-chip ${isPassed ? 'safe' : 'danger'}"><i class="fas ${isPassed ? 'fa-check-circle' : 'fa-times-circle'}"></i> ${isPassed ? '通过' : '失败'}</span>
+                        </div>
                     </div>
-                    <div style="color: #666; margin-top: 8px; font-size: 13px;">${item.description || '无详细描述'}</div>
-                    ${!isPassed && item.remediation ? `<div style="color: #e67e22; margin-top: 6px; font-size: 12px;"><i class="fas fa-wrench"></i> 修复建议: ${item.remediation}</div>` : ''}
+                    <div class="tech-panel-desc">${item.description || '无详细描述'}</div>
+                    ${item.category ? `<div class="tech-meta"><i class="fas fa-tag"></i>分类: ${item.category}</div>` : ''}
+                    ${!isPassed && item.remediation ? `<div class="tech-remediation"><strong><i class="fas fa-wrench"></i> 修复建议:</strong> ${item.remediation}</div>` : ''}
                 </div>`;
         });
         complianceTab.innerHTML = html + '</div>';
@@ -447,10 +577,10 @@ class SecKeeperApp {
     // 🟢 重点：重构漏洞渲染逻辑，加入分类和 PoC 过滤功能
     displayVulnerabilityData() {
         const vulnTab = document.getElementById('vulnerabilities');
-        const vulns = this.currentData.vulnerabilities?.details || this.currentData.vulnerabilities?.vulnerabilities || [];
+        const vulns = this.getVulnerabilityList();
 
         if (vulns.length === 0) {
-            vulnTab.innerHTML = '<div class="card"><div style="text-align:center; padding:40px; color:#27ae60;"><i class="fas fa-shield-check" style="font-size:48px; margin-bottom:20px;"></i><h3>系统处于安全状态</h3><p>本次扫描未发现风险漏洞</p></div></div>';
+            vulnTab.innerHTML = '<div class="card"><div class="empty-state"><i class="fas fa-shield-check"></i><h3>系统处于安全状态</h3><p>本次扫描未发现风险漏洞</p></div></div>';
             return;
         }
 
@@ -463,6 +593,8 @@ class SecKeeperApp {
                     <button class="filter-btn ${this.currentVulnFilter === 'config' ? 'active' : ''}" onclick="window.secKeeperApp.setVulnFilter('config')">配置与越权</button>
                     <button class="filter-btn ${this.currentVulnFilter === 'privilege' ? 'active' : ''}" onclick="window.secKeeperApp.setVulnFilter('privilege')">提权与后门</button>
                     <button class="filter-btn ${this.currentVulnFilter === 'kernel' ? 'active' : ''}" onclick="window.secKeeperApp.setVulnFilter('kernel')" title="内核CVE因发行版向后移植补丁机制，版本号与上游不一致，需人工确认">⚪ 内核CVE (待确认)</button>
+                    <button class="filter-btn ${this.currentVulnFilter === 'network' ? 'active' : ''}" onclick="window.secKeeperApp.setVulnFilter('network')">Network Verify</button>
+                    <button class="filter-btn ${this.currentVulnFilter === 'local' ? 'active' : ''}" onclick="window.secKeeperApp.setVulnFilter('local')">Local Verify</button>
                 </div>
                 <label class="verified-toggle">
                     <input type="checkbox" id="verified-checkbox" ${this.showVerifiedOnly ? 'checked' : ''} onchange="window.secKeeperApp.toggleVerifiedOnly(this.checked)">
@@ -470,6 +602,7 @@ class SecKeeperApp {
                 </label>
             </div>
         </div>
+        ${this.renderVerificationSummaryCards()}
         <div id="vuln-list-container"></div>`;
 
         vulnTab.innerHTML = html;
@@ -511,6 +644,8 @@ class SecKeeperApp {
                 matchCategory = (v.verification_status === 'needs_manual_check') ||
                                 (v.tags && v.tags.includes('kernel'));
             }
+            else if (this.currentVulnFilter === 'network') matchCategory = (v.verification_method === 'network');
+            else if (this.currentVulnFilter === 'local') matchCategory = (v.verification_method === 'local');
 
             // 2. 根据实锤开关过滤
             let matchVerified = true;
@@ -523,7 +658,7 @@ class SecKeeperApp {
         });
 
         if (filteredVulns.length === 0) {
-            container.innerHTML = '<div class="card" style="text-align:center; padding:40px; color:#7f8c8d;"><i class="fas fa-clipboard-check" style="font-size: 48px; color: #bdc3c7; margin-bottom: 15px;"></i><h3>无匹配的风险条目</h3></div>';
+            container.innerHTML = '<div class="card"><div class="empty-state"><i class="fas fa-clipboard-check"></i><h3>无匹配的风险条目</h3></div></div>';
             return;
         }
 
@@ -545,26 +680,114 @@ class SecKeeperApp {
 
             // 内核CVE额外显示一个说明提示条
             const kernelNotice = isKernel ? `
-                <div style="margin: 8px 0; padding: 8px 12px; background: #f0f0f0; border-radius: 4px; font-size: 12px; color: #666;">
+                <div class="kernel-notice">
                     <i class="fas fa-info-circle"></i>
                     <strong>注：</strong>发行版内核会向后移植安全补丁，实际修复状态需通过
                     <code>apt-cache changelog linux-image-$(uname -r)</code>
                     或查阅发行版安全公告确认，此条目仅供参考。
                 </div>` : '';
 
+            const severityClass = isKernel ? 'manual' : (sev === 'critical' ? 'critical' : sev === 'high' ? 'high' : sev === 'medium' ? 'medium' : 'low');
             html += `
-                <div style="padding: 18px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid ${color}; background: ${isKernel ? '#fafafa' : '#fff'}; box-shadow: 0 2px 4px rgba(0,0,0,0.1); ${isKernel ? 'opacity: 0.85;' : ''}">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                        <strong style="color: ${color}; font-size: 1.1em;">${vuln.title || vuln.vuln_id || '未知风险'}</strong>
-                        <span style="padding: 2px 8px; background: ${color}; color: white; border-radius: 3px; font-size: 12px;">${sevLabel}</span>
+                <div class="tech-panel status-${isKernel ? 'info' : (sev === 'critical' || sev === 'high' ? 'fail' : 'warn')} ${isKernel ? 'kernel-muted' : ''}">
+                    <div class="tech-panel-header">
+                        <strong class="tech-panel-title">${vuln.title || vuln.vuln_id || '未知风险'}</strong>
+                        <span class="risk-severity ${severityClass}">${sevLabel}</span>
                     </div>
                     ${kernelNotice}
-                    <div style="font-size: 13px; margin-bottom: 5px;"><strong><i class="fas fa-align-left" style="color: #7f8c8d;"></i> 描述:</strong> ${vuln.description || ''}</div>
-                    <div style="font-size: 13px; margin-bottom: 5px;"><strong><i class="fas fa-crosshairs" style="color: #7f8c8d;"></i> 影响组件:</strong> ${targets}</div>
-                    ${vuln.remediation ? `<div style="font-size: 13px; color: #27ae60; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #eee;"><strong><i class="fas fa-wrench"></i> 修复建议:</strong> ${vuln.remediation}</div>` : ''}
+                    <div class="tech-panel-desc"><strong><i class="fas fa-align-left"></i> 描述:</strong> ${vuln.description || ''}</div>
+                    <div class="tech-meta"><i class="fas fa-crosshairs"></i><strong>影响组件:</strong> ${targets}</div>
+                    ${this.renderVulnVerificationBadges(vuln)}
+                    ${vuln.remediation ? `<div class="tech-remediation"><strong><i class="fas fa-wrench"></i> 修复建议:</strong> ${vuln.remediation}</div>` : ''}
                 </div>`;
         });
         container.innerHTML = html;
+    }
+
+    getVulnerabilityList() {
+        return this.currentData.vulnerabilities?.details || this.currentData.vulnerabilities?.vulnerabilities || [];
+    }
+
+    getVerificationSummary() {
+        const serverSummary = this.currentData.vulnerabilities?.verification_summary || this.currentData.verificationSummary || {};
+        const vulns = this.getVulnerabilityList();
+        const summary = {
+            verified: Number(serverSummary.verified || 0),
+            unverified: Number(serverSummary.unverified || 0),
+            needs_manual_check: Number(serverSummary.needs_manual_check || serverSummary.manual || 0),
+            local: Number(serverSummary.local || 0),
+            network: Number(serverSummary.network || 0),
+            version: Number(serverSummary.version || 0)
+        };
+        if (Object.values(summary).some(v => v > 0) || vulns.length === 0) return summary;
+
+        vulns.forEach(v => {
+            const status = v.verification_status || (String(v.title || '').includes('实锤') ? 'verified' : 'unverified');
+            if (status === 'verified') summary.verified += 1;
+            else if (status === 'needs_manual_check') summary.needs_manual_check += 1;
+            else summary.unverified += 1;
+
+            const method = (v.verification_method || '').toLowerCase();
+            if (method === 'local') summary.local += 1;
+            else if (method === 'network') summary.network += 1;
+            else if (method === 'version') summary.version += 1;
+        });
+        return summary;
+    }
+
+    getXinchuangSummary() {
+        return this.currentData.compliance?.xinchuang_summary || this.currentData.xinchuangSummary || {};
+    }
+
+    getSafetyLabel(value) {
+        const map = {
+            safe_probe: '无害化探测',
+            version_probe: '版本探针',
+            environment_probe: '环境探针',
+            active_probe: '深度验证',
+            auth_probe: '授权/口令探测',
+            sensitive_read: '敏感信息读取验证',
+            oob: 'OOB 探测'
+        };
+        return map[value] || value || '未标注';
+    }
+
+    getMethodLabel(value) {
+        const map = { local: 'Local Verify', network: 'Network Verify', version: 'Version Match' };
+        return map[value] || value || '未标注';
+    }
+
+    renderVerificationSummaryCards() {
+        const summary = this.getVerificationSummary();
+        return `
+            <div class="card" style="margin-bottom: 20px;">
+                <h3><i class="fas fa-diagram-project"></i> 双核验证统计</h3>
+                <div class="status-grid">
+                    <div class="status-item warning"><div class="status-icon"><i class="fas fa-circle-check"></i></div><div class="status-info"><div class="status-label">已验证漏洞</div><div class="status-value">${summary.verified || 0}</div></div></div>
+                    <div class="status-item normal"><div class="status-icon"><i class="fas fa-server"></i></div><div class="status-info"><div class="status-label">Network Verify</div><div class="status-value">${summary.network || 0}</div></div></div>
+                    <div class="status-item normal"><div class="status-icon"><i class="fas fa-terminal"></i></div><div class="status-info"><div class="status-label">Local Verify</div><div class="status-value">${summary.local || 0}</div></div></div>
+                    <div class="status-item warning"><div class="status-icon"><i class="fas fa-circle-question"></i></div><div class="status-info"><div class="status-label">待确认</div><div class="status-value">${summary.needs_manual_check || 0}</div></div></div>
+                </div>
+            </div>`;
+    }
+
+    renderVulnVerificationBadges(vuln) {
+        const method = vuln.verification_method;
+        const safety = vuln.verification_safety;
+        const status = vuln.verification_status || 'unverified';
+        const statusMap = {
+            verified: ['已验证', '#27ae60'],
+            unverified: ['疑似', '#f39c12'],
+            needs_manual_check: ['待确认', '#7f8c8d']
+        };
+        const [statusLabel, statusColor] = statusMap[status] || [status, '#7f8c8d'];
+        const statusClass = status === 'verified' ? 'safe' : (status === 'needs_manual_check' ? 'muted' : 'warn');
+        return `
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin:8px 0;">
+                <span class="tech-chip ${statusClass}"><i class="fas fa-check-double"></i> ${statusLabel}</span>
+                ${method ? `<span class="tech-chip"><i class="fas fa-microchip"></i> ${this.getMethodLabel(method)}</span>` : ''}
+                ${safety ? `<span class="tech-chip muted"><i class="fas fa-shield-halved"></i> ${this.getSafetyLabel(safety)}</span>` : ''}
+            </div>`;
     }
 
     initCharts() {
@@ -578,7 +801,7 @@ class SecKeeperApp {
         const el = document.getElementById('vulnPieChart');
         if (!el) return;
 
-        const vulns = this.currentData.vulnerabilities?.details || this.currentData.vulnerabilities?.vulnerabilities || [];
+        const vulns = this.getVulnerabilityList();
         let counts = { critical: 0, high: 0, medium: 0, low: 0 };
         vulns.forEach(v => { const s = (v.severity || 'low').toLowerCase(); if(counts[s] !== undefined) counts[s]++; });
 
@@ -627,8 +850,9 @@ class SecKeeperApp {
         try {
             this.showNotification('<i class="fas fa-file-pdf"></i> 正在生成PDF报告...', 'info');
             const pdfBlob = await this.api.generateReport({
-                scan_id: `report_${Date.now()}`,
-                assets: { software: this.currentData.software, services: this.currentData.services },
+                scan_id: this.currentData.lastScanResult?.scan_id || `report_${Date.now()}`,
+                timestamp: this.currentData.lastScanResult?.timestamp || new Date().toISOString(),
+                assets: { software: this.currentData.software, services: this.currentData.services, system_info: this.currentData.hostInfo || this.currentData.systemInfo || {} },
                 compliance: this.currentData.compliance,
                 vulnerabilities: this.currentData.vulnerabilities
             });
