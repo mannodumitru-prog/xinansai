@@ -204,6 +204,8 @@ class CveDetector(BaseDetector):
     def detect(self, software_list: List[Dict] = None) -> List[Dict]:
         """执行漏洞检测"""
         vulnerabilities = []
+        # 内核 CVE 候选项不再逐条输出，统一聚合，避免前端出现 3000+ 待确认项。
+        kernel_candidates = []
 
         try:
             rules = self.rules.get("rules", [])
@@ -233,41 +235,55 @@ class CveDetector(BaseDetector):
                         # 单独标注，让评委看到我们知道这个局限性。
                         # ——————————————————————————————————————————
                         if is_kernel:
-                            vulnerability = self.format_vulnerability(
-                                vuln_id=rule["cve_id"],
-                                title=(f"⚪[待确认] {rule['cve_id']}: "
-                                       f"{rule['description'][:100]}"),
-                                severity="low",   # 主动降级，避免误导
-                                category="cve",
-                                description=(
-                                    f"[内核CVE - 需人工确认] {rule['description']}\n\n"
-                                    f"⚠️ 注意：发行版内核会向后移植安全补丁，版本号与上游"
-                                    f"kernel.org不一致，本条结果仅供参考，建议通过"
-                                    f"`apt-cache changelog linux-image-$(uname -r)` "
-                                    f"或查阅发行版安全公告确认实际修复状态。"
-                                ),
-                                affected_target=(f"linux-kernel "
-                                                 f"{software['version']} "
-                                                 f"(上游规则: {rule['cve_id']})"),
-                                remediation=(
-                                    f"1. 查阅发行版官方安全公告确认是否已修复\n"
-                                    f"2. 如未修复，执行: sudo apt update && "
-                                    f"sudo apt upgrade linux-image-generic\n"
-                                    f"3. {rule.get('remediation', '')}"
-                                ),
-                                cvss_score=rule.get("cvss_score", 0.0),
-                                references=rule.get("references", []),
-                                published_date=rule.get("published_date", ""),
-                                tags=rule.get("tags", []) + ["kernel", "needs_manual_check"],
-                                verification_status="needs_manual_check",
-                                verification_method=rule.get("verification_method", "version_match"),
-                                verification_engine=rule.get("verification_engine", "cve_rule_match"),
-                                verification_safety=rule.get("verification_safety", "version_probe"),
-                                poc_file=rule.get("poc_file"),
-                                offline_supported=rule.get("offline_supported", True)
-                            )
-                            vulnerabilities.append(vulnerability)
-                            continue  # 内核条目不走PoC验证，直接下一条
+                            # 内核规则先进入候选池，默认不逐条输出。
+                            # 只有规则明确配置了本地 PoC 且验证为 True 时，才作为实锤漏洞单独输出；
+                            # 其余全部聚合为 1 条“内核 CVE 候选项汇总”。
+                            kernel_verify_result = None
+                            if rule.get("poc_file") and self.verifier:
+                                try:
+                                    kernel_verify_result = self.verifier.verify(
+                                        rule["cve_id"], software, target_type="pocs"
+                                    )
+                                except Exception as e:
+                                    print(f"⚠️ 内核 PoC 执行异常({rule['cve_id']}): {e}")
+
+                            if kernel_verify_result is True:
+                                vulnerability = self.format_vulnerability(
+                                    vuln_id=rule["cve_id"],
+                                    title=(f"🔴[实锤漏洞] {rule['cve_id']}: "
+                                           f"{rule['description'][:100]}"),
+                                    severity=rule.get("severity", "high"),
+                                    category="cve",
+                                    description=rule["description"],
+                                    affected_target=(f"linux-kernel {software['version']}"),
+                                    remediation=rule.get("remediation", "请升级内核至发行版安全公告中的修复版本。"),
+                                    cvss_score=rule.get("cvss_score", 0.0),
+                                    references=rule.get("references", []),
+                                    published_date=rule.get("published_date", ""),
+                                    tags=rule.get("tags", []) + ["kernel", "verified"],
+                                    verification_status="verified",
+                                    verification_method=rule.get("verification_method", "local"),
+                                    verification_engine=rule.get("verification_engine", "python_probe"),
+                                    verification_safety=rule.get("verification_safety", "safe_probe"),
+                                    poc_file=rule.get("poc_file"),
+                                    offline_supported=rule.get("offline_supported", True)
+                                )
+                                vulnerabilities.append(vulnerability)
+                            elif kernel_verify_result is False:
+                                print(f"⚠️ 内核版本匹配但PoC验证失败，排除误报: {rule['cve_id']}")
+                            else:
+                                kernel_candidates.append({
+                                    "cve_id": rule.get("cve_id", "unknown"),
+                                    "description": rule.get("description", ""),
+                                    "severity": rule.get("severity", "low"),
+                                    "cvss_score": rule.get("cvss_score", 0.0),
+                                    "published_date": rule.get("published_date", ""),
+                                    "references": rule.get("references", []),
+                                    "remediation": rule.get("remediation", ""),
+                                    "kernel_version": software.get("version", "unknown"),
+                                    "raw_kernel": software.get("raw_name", "linux")
+                                })
+                            continue  # 内核条目单独处理，不进入普通软件 PoC 流程
 
                         # ——————————————————————————————————————————
                         # 普通软件：走完整PoC/Nuclei验证闭环
@@ -322,12 +338,104 @@ class CveDetector(BaseDetector):
                     except Exception as e:
                         print(f"⚠️ 规则匹配失败: {e}")
 
+            # 内核 CVE 候选项统一聚合为 1 条待人工核验记录，避免大量发行版 backport 误报淹没真正风险。
+            if kernel_candidates:
+                aggregate = self._build_kernel_candidate_summary(kernel_candidates)
+                if aggregate:
+                    vulnerabilities.append(aggregate)
+                    print(f"🐧 内核 CVE 候选项已聚合: {len(kernel_candidates)} 条 → 1 条待人工核验汇总")
+
             print(f"✅ 漏洞检测完成，发现 {len(vulnerabilities)} 个漏洞")
             return vulnerabilities
 
         except Exception as e:
             print(f"❌ 漏洞检测失败: {e}")
             return []
+
+    # ----------------------------------------------------------
+    # 内核 CVE 聚合降噪
+    # ----------------------------------------------------------
+    def _build_kernel_candidate_summary(self, candidates: List[Dict]) -> Optional[Dict]:
+        """
+        将大量内核 CVE 版本命中结果聚合为一条待人工核验项。
+
+        这样做的原因：Ubuntu / 银河麒麟 / UOS 等发行版内核会 backport 安全补丁，
+        单纯用 uname 主版本与上游 kernel.org 修复版本比较会产生大量候选命中。
+        这些候选项不能直接等同于真实漏洞，也不适合逐条展示给用户。
+        """
+        if not candidates:
+            return None
+
+        def _cvss(item: Dict) -> float:
+            try:
+                return float(item.get("cvss_score") or 0.0)
+            except Exception:
+                return 0.0
+
+        sorted_items = sorted(candidates, key=_cvss, reverse=True)
+        total = len(sorted_items)
+        kernel_version = sorted_items[0].get("kernel_version", "unknown")
+        raw_kernel = sorted_items[0].get("raw_kernel", "linux")
+        max_cvss = _cvss(sorted_items[0])
+
+        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0}
+        for item in sorted_items:
+            sev = str(item.get("severity", "unknown")).lower()
+            if sev not in severity_counts:
+                sev = "unknown"
+            severity_counts[sev] += 1
+
+        top_items = sorted_items[:12]
+        top_lines = []
+        for item in top_items:
+            desc = (item.get("description") or "").replace("\n", " ").strip()
+            if len(desc) > 90:
+                desc = desc[:90] + "..."
+            top_lines.append(
+                f"- {item.get('cve_id', 'unknown')} | CVSS {item.get('cvss_score', 0.0)} | {desc}"
+            )
+
+        references = []
+        for item in sorted_items:
+            refs = item.get("references") or []
+            if isinstance(refs, list):
+                references.extend(refs[:2])
+            if len(references) >= 10:
+                break
+
+        description = (
+        "当前系统内核版本命中了部分公开安全公告。"
+        "由于 Linux 发行版（包括银河麒麟、统信 UOS 等）普遍采用安全补丁回补（Backport）机制，"
+        "仅依据内核版本无法准确判断漏洞是否真实存在，建议结合官方安全公告进一步确认。"
+    )
+
+
+        remediation = (
+            "1. 优先查阅当前发行版安全公告，确认该内核包是否已回补相关补丁。\n"
+            "2. Ubuntu/Debian 可执行: apt-cache changelog linux-image-$(uname -r) | less\n"
+            "3. 银河麒麟 / 统信 UOS 建议结合厂商安全公告和系统更新源确认修复状态。\n"
+            "4. 如确认未修复，执行系统内核安全更新并重启进入新内核。"
+        )
+
+        return self.format_vulnerability(
+            vuln_id="KERNEL-CVE-CANDIDATES",
+            title=f"⚪[待人工核验] Linux 内核安全风险",
+            severity="low",
+            category="cve",
+            description=description,
+            affected_target=f"{raw_kernel} / normalized {kernel_version}",
+            remediation=remediation,
+            cvss_score=max_cvss,
+            references=references,
+            published_date="",
+            tags=["kernel", "needs_manual_check", "aggregated", "version_match"],
+            verification_status="needs_manual_check",
+            verification_method="version_match",
+            verification_engine="kernel_candidate_aggregator",
+            verification_safety="version_probe",
+            poc_file=None,
+            offline_supported=True
+        )
 
     # ----------------------------------------------------------
     # 软件清单获取
