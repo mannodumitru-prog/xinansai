@@ -37,6 +37,7 @@ if core_dir not in sys.path:
 try:
     from poc_verifier import PocVerifier
 except ImportError as e:
+    PocVerifier = None
     print(f"⚠️ 无法导入 PocVerifier: {e}")
 
 # ============================================================
@@ -181,7 +182,15 @@ class CveDetector(BaseDetector):
 
     def __init__(self, rules_dir: str = "core/rules"):
         super().__init__(rules_dir)
-        self.verifier = PocVerifier()
+        if PocVerifier is None:
+            self.verifier = None
+            print("⚠️ PocVerifier 不可用，将仅进行版本初筛，跳过本地 PoC 验证")
+        else:
+            try:
+                self.verifier = PocVerifier()
+            except Exception as e:
+                self.verifier = None
+                print(f"⚠️ PocVerifier 初始化失败，将仅进行版本初筛: {e}")
 
     def get_detector_name(self) -> str:
         return "cve_detector"
@@ -198,18 +207,7 @@ class CveDetector(BaseDetector):
 
         try:
             rules = self.rules.get("rules", [])
-            print("\n================ DEBUG ① ================")
-            print(f"规则对象类型: {type(self.rules)}")
-
-            if isinstance(self.rules, dict):
-                print(f"规则Keys: {list(self.rules.keys())}")
-
-            print(f"CVE规则数量: {len(rules)}")
-
-            if len(rules) > 0:
-                print("第一条规则：")
-                print(rules[0])
-            print("=========================================\n")
+            print(f"[INFO] CVE规则数量: {len(rules)}")
             if not rules:
                 print("⚠️ 未加载到任何CVE规则")
                 return []
@@ -261,7 +259,12 @@ class CveDetector(BaseDetector):
                                 references=rule.get("references", []),
                                 published_date=rule.get("published_date", ""),
                                 tags=rule.get("tags", []) + ["kernel", "needs_manual_check"],
-                                verification_status="needs_manual_check"
+                                verification_status="needs_manual_check",
+                                verification_method=rule.get("verification_method", "version_match"),
+                                verification_engine=rule.get("verification_engine", "cve_rule_match"),
+                                verification_safety=rule.get("verification_safety", "version_probe"),
+                                poc_file=rule.get("poc_file"),
+                                offline_supported=rule.get("offline_supported", True)
                             )
                             vulnerabilities.append(vulnerability)
                             continue  # 内核条目不走PoC验证，直接下一条
@@ -272,9 +275,10 @@ class CveDetector(BaseDetector):
                         verify_result = None
                         try:
                             # cve_detector.py 中
-                            verify_result = self.verifier.verify(
-                                rule["cve_id"], software, target_type="pocs"
-                            )
+                            if self.verifier:
+                                verify_result = self.verifier.verify(
+                                    rule["cve_id"], software, target_type="pocs"
+                                )
                         except Exception as e:
                             print(f"⚠️ PoC执行异常({rule['cve_id']}): {e}")
 
@@ -306,7 +310,12 @@ class CveDetector(BaseDetector):
                             references=rule.get("references", []),
                             published_date=rule.get("published_date", ""),
                             tags=rule.get("tags", []),
-                            verification_status=ver_status
+                            verification_status=ver_status,
+                            verification_method=rule.get("verification_method", "local" if rule.get("poc_file") else "version_match"),
+                            verification_engine=rule.get("verification_engine", "python_probe" if rule.get("poc_file") else "cve_rule_match"),
+                            verification_safety=rule.get("verification_safety", "safe_probe" if verify_result is True else "version_probe"),
+                            poc_file=rule.get("poc_file"),
+                            offline_supported=rule.get("offline_supported", True)
                         )
                         vulnerabilities.append(vulnerability)
 

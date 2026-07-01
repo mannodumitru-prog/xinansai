@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-真实合规检查模块 - 完整生产版本
-基于密码熵检查和系统安全配置分析
+真实合规检查模块 - 工程化版本
+
+定位：
+1. 作为“合规检查”三大板块的统一入口
+2. 默认调用 ConfigDetector，共享 core/rules/config_rules.json
+3. 保留少量内置检查作为补充，避免旧前端/报告断裂
+4. 识别信创等保基线项，用于前端突出展示信创特色
 """
 
 import re
@@ -16,68 +21,356 @@ class RealComplianceChecker:
     """真实合规检查器 - 生产环境实现"""
     
     @staticmethod
-    def run_compliance_checks() -> Dict[str, Any]:
-        """执行真实合规检查"""
-        try:
-            print("🛡️ 开始系统合规检查...")
-            
-            checks = {
-                "summary": {
-                    "total": 0,
-                    "passed": 0,
-                    "failed": 0,
-                    "compliance_rate": 0
-                },
-                "checks": [],
-                "scan_timestamp": datetime.now().isoformat(),
-                "scan_id": f"compliance_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            }
-            
-            # 执行各类安全检查
-            password_checks = RealComplianceChecker._check_password_policy()
-            checks["checks"].extend(password_checks)
-            
-            ssh_checks = RealComplianceChecker._check_ssh_config()
-            checks["checks"].extend(ssh_checks)
-            
-            firewall_checks = RealComplianceChecker._check_firewall()
-            checks["checks"].extend(firewall_checks)
-            
-            system_checks = RealComplianceChecker._check_system_security()
-            checks["checks"].extend(system_checks)
-            
-            network_checks = RealComplianceChecker._check_network_security()
-            checks["checks"].extend(network_checks)
-            
-            # 计算统计
-            total_checks = len(checks["checks"])
-            passed_checks = sum(1 for check in checks["checks"] if check.get("passed", False))
-            compliance_rate = round((passed_checks / total_checks) * 100, 1) if total_checks > 0 else 0
-            
-            checks["summary"] = {
-                "total": total_checks,
-                "passed": passed_checks,
-                "failed": total_checks - passed_checks,
-                "compliance_rate": compliance_rate
-            }
-            
-            print(f"✅ 合规检查完成: 通过 {passed_checks}/{total_checks} 项检查")
-            return checks
-            
-        except Exception as e:
-            print(f"❌ 合规检查错误: {e}")
-            return {
-                "summary": {"total": 0, "passed": 0, "failed": 0, "compliance_rate": 0},
-                "checks": [{
-                    "name": "合规检查系统",
-                    "category": "系统",
-                    "passed": False,
-                    "description": f"检查过程出错: {str(e)}",
-                    "risk_level": "高"
-                }],
-                "scan_timestamp": datetime.now().isoformat()
-            }
+    def run_compliance_checks(
+        include_config_detector: bool = True,
+        include_legacy_checks: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        执行真实合规检查。
+
+        设计原则：
+        - ConfigDetector 是合规规则主引擎，负责消费 config_rules.json。
+        - 内置 legacy 检查只作为补充与兼容层，可通过 include_legacy_checks=False 关闭。
+
+        兼容旧接口：
+        - 仍然返回 summary / checks / scan_timestamp / scan_id
+        新增工程化字段：
+        - success / status / results / errors / warnings / categories / xinchuang_summary
+        """
+        scan_id = f"compliance_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        scan_timestamp = datetime.now().isoformat()
+        started_at = datetime.now()
+        errors: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+        checks: List[Dict[str, Any]] = []
+
+        print("🛡️ 开始系统合规检查...")
+
+        # 1. 优先执行 ConfigDetector，让 config_rules.json 成为合规基线主规则源。
+        if include_config_detector:
+            try:
+                detector_checks, detector_warnings = RealComplianceChecker._run_config_detector_checks()
+                checks.extend(detector_checks)
+                warnings.extend(detector_warnings)
+            except Exception as e:
+                warnings.append({
+                    "section": "config_detector_bridge",
+                    "warning": f"ConfigDetector 合规桥接跳过: {e}",
+                    "timestamp": datetime.now().isoformat()
+                })
+
+        sections = [
+            ("password_policy", RealComplianceChecker._check_password_policy),
+            ("ssh_config", RealComplianceChecker._check_ssh_config),
+            ("firewall", RealComplianceChecker._check_firewall),
+            ("system_security", RealComplianceChecker._check_system_security),
+            ("network_security", RealComplianceChecker._check_network_security),
+        ]
+
+        # 2. 内置检查作为补充层；默认保留，避免旧功能消失。
+        if include_legacy_checks:
+            for section_name, section_func in sections:
+                try:
+                    section_checks = section_func() or []
+                    for item in section_checks:
+                        checks.append(RealComplianceChecker._normalize_check(item, source=section_name))
+                except Exception as e:
+                    error = {
+                        "section": section_name,
+                        "error": str(e),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    errors.append(error)
+                    checks.append(RealComplianceChecker._normalize_check({
+                        "name": f"{section_name} 检查异常",
+                        "category": "系统",
+                        "passed": False,
+                        "description": f"检查过程出错: {e}",
+                        "risk_level": "高",
+                    }, source=section_name))
+
+        checks = RealComplianceChecker._deduplicate_checks(checks)
+        summary = RealComplianceChecker._generate_summary(checks)
+        duration = round((datetime.now() - started_at).total_seconds(), 3)
+        status = "success" if not errors else ("partial_success" if checks else "failed")
+
+        result = {
+            "success": status != "failed",
+            "status": status,
+            "scan_id": scan_id,
+            "scan_timestamp": scan_timestamp,
+            "duration_seconds": duration,
+            "summary": summary,
+            "checks": checks,        # 兼容旧前端/报告
+            "results": checks,       # 统一新结构
+            "errors": errors,
+            "warnings": warnings,
+            "categories": summary.get("categories", {}),
+            "xinchuang_summary": RealComplianceChecker._detect_xinchuang_summary(checks),
+            "config_detector_enabled": include_config_detector,
+            "legacy_checks_enabled": include_legacy_checks,
+            "primary_rule_source": "config_rules.json" if include_config_detector else "legacy_builtin_checks",
+        }
+
+        print(
+            f"✅ 合规检查完成: 通过 {summary['passed']}/{summary['total']} 项检查，"
+            f"合规率 {summary['compliance_rate']}%"
+        )
+        return result
+
     
+
+    @staticmethod
+    def _normalize_check(check: Dict[str, Any], source: str = "builtin") -> Dict[str, Any]:
+        """统一合规检查项结构，同时保留旧字段。"""
+        if not isinstance(check, dict):
+            check = {
+                "name": "未知检查项",
+                "category": "未知",
+                "passed": False,
+                "description": str(check),
+                "risk_level": "中",
+            }
+
+        name = check.get("name") or check.get("check") or check.get("check_name") or "未命名检查项"
+        category = check.get("category") or check.get("type") or "通用合规"
+        passed = bool(check.get("passed", False))
+        risk_level = check.get("risk_level") or check.get("severity") or ("低" if passed else "中")
+        description = check.get("description") or check.get("details") or ""
+        remediation = check.get("remediation")
+
+        status = "passed" if passed else "failed"
+        normalized = dict(check)
+        normalized.update({
+            "id": check.get("id") or RealComplianceChecker._make_check_id(name, category),
+            "name": name,
+            "check": name,          # 兼容旧报告字段
+            "category": category,
+            "passed": passed,
+            "status": status,
+            "description": description,
+            "risk_level": RealComplianceChecker._normalize_risk_level(risk_level),
+            "severity": RealComplianceChecker._risk_to_severity(risk_level),
+            "source": source,
+            "remediation": remediation,
+            "is_xinchuang": bool(check.get("is_xinchuang")) or RealComplianceChecker._is_xinchuang_related(
+                name, category, description, check.get("target"), check.get("affected_target"), check.get("remediation")
+            ),
+            "checked_at": datetime.now().isoformat(),
+        })
+        return normalized
+
+    @staticmethod
+    def _deduplicate_checks(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        对合规检查项去重。
+
+        同一检查项同时来自 ConfigDetector 与 legacy 内置检查时，优先保留
+        ConfigDetector 结果，确保 config_rules.json 作为主规则源，避免两套密码/基线逻辑漂移。
+        """
+        if not checks:
+            return []
+
+        source_priority = {
+            "config_detector": 0,
+            "password_policy": 1,
+            "ssh_config": 1,
+            "firewall": 1,
+            "system_security": 1,
+            "network_security": 1,
+        }
+
+        def key_of(item: Dict[str, Any]) -> str:
+            name = str(item.get("name") or item.get("check") or "").strip().lower()
+            category = str(item.get("category") or "").strip().lower()
+            target = str(item.get("target") or item.get("affected_target") or "").strip().lower()
+            return f"{category}|{name}|{target}"
+
+        selected: Dict[str, Dict[str, Any]] = {}
+        for item in checks:
+            key = key_of(item)
+            if not key.strip("|"):
+                key = str(id(item))
+
+            old = selected.get(key)
+            if old is None:
+                selected[key] = item
+                continue
+
+            old_pri = source_priority.get(str(old.get("source")), 9)
+            new_pri = source_priority.get(str(item.get("source")), 9)
+            if new_pri < old_pri:
+                selected[key] = item
+
+        return list(selected.values())
+
+    @staticmethod
+    def _make_check_id(name: str, category: str) -> str:
+        raw = f"{category}-{name}".lower()
+        raw = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "-", raw).strip("-")
+        return f"COMPLIANCE-{raw[:80]}"
+
+    @staticmethod
+    def _normalize_risk_level(level: Any) -> str:
+        mapping = {
+            "critical": "严重", "high": "高", "medium": "中", "low": "低", "info": "低",
+            "严重": "严重", "高": "高", "中": "中", "低": "低",
+        }
+        return mapping.get(str(level).strip().lower(), str(level or "中"))
+
+    @staticmethod
+    def _risk_to_severity(level: Any) -> str:
+        normalized = RealComplianceChecker._normalize_risk_level(level)
+        mapping = {"严重": "critical", "高": "high", "中": "medium", "低": "low"}
+        return mapping.get(normalized, "medium")
+
+    @staticmethod
+    def _generate_summary(checks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total = len(checks)
+        passed = sum(1 for item in checks if item.get("passed") is True)
+        failed = total - passed
+        compliance_rate = round((passed / total) * 100, 1) if total else 0
+
+        risk_count = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        categories: Dict[str, Dict[str, int]] = {}
+        xinchuang_total = 0
+        xinchuang_failed = 0
+
+        for item in checks:
+            sev = item.get("severity", "medium")
+            if sev in risk_count and not item.get("passed", False):
+                risk_count[sev] += 1
+
+            category = item.get("category", "其他")
+            categories.setdefault(category, {"total": 0, "passed": 0, "failed": 0})
+            categories[category]["total"] += 1
+            if item.get("passed"):
+                categories[category]["passed"] += 1
+            else:
+                categories[category]["failed"] += 1
+
+            if item.get("is_xinchuang"):
+                xinchuang_total += 1
+                if not item.get("passed"):
+                    xinchuang_failed += 1
+
+        return {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "compliance_rate": compliance_rate,
+            "risk_count": risk_count,
+            "critical": risk_count["critical"],
+            "high": risk_count["high"],
+            "medium": risk_count["medium"],
+            "low": risk_count["low"],
+            "categories": categories,
+            "xinchuang_total": xinchuang_total,
+            "xinchuang_failed": xinchuang_failed,
+        }
+
+    @staticmethod
+    def _run_config_detector_checks() -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """桥接 ConfigDetector：把规则库命中的配置问题转成合规检查失败项。"""
+        warnings: List[Dict[str, Any]] = []
+        checks: List[Dict[str, Any]] = []
+
+        try:
+            core_dir = Path(__file__).resolve().parent
+            rules_dir = core_dir / "rules"
+            if not rules_dir.exists():
+                # 上传文件单独测试时可能没有 core/rules，安静跳过。
+                return checks, warnings
+
+            import sys
+            project_root = str(core_dir.parent)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+
+            try:
+                from core.detectors.config_detector import ConfigDetector
+            except Exception:
+                from detectors.config_detector import ConfigDetector
+
+            detector = ConfigDetector(rules_dir=str(rules_dir))
+            vulnerabilities = detector.detect() or []
+
+            for vuln in vulnerabilities:
+                checks.append(RealComplianceChecker._normalize_check({
+                    "name": vuln.get("check_name") or vuln.get("title") or vuln.get("vuln_id"),
+                    "category": vuln.get("category", "配置合规"),
+                    "passed": False,
+                    "description": vuln.get("description", "配置基线检查未通过"),
+                    "risk_level": vuln.get("severity", "medium"),
+                    "remediation": vuln.get("remediation"),
+                    "target": vuln.get("affected_target"),
+                    "affected_target": vuln.get("affected_target"),
+                    "actual": vuln.get("actual"),
+                    "expected": vuln.get("expected"),
+                    "source_vuln_id": vuln.get("vuln_id"),
+                    "verification_source": "config_rules.json",
+                    "is_xinchuang": RealComplianceChecker._is_xinchuang_related(
+                        vuln.get("title"), vuln.get("category"), vuln.get("description"),
+                        vuln.get("affected_target"), vuln.get("remediation")
+                    ),
+                }, source="config_detector"))
+
+        except Exception as e:
+            warnings.append({
+                "section": "config_detector_bridge",
+                "warning": str(e),
+                "timestamp": datetime.now().isoformat()
+            })
+
+        return checks, warnings
+
+    @staticmethod
+    def _is_xinchuang_related(*values: Any) -> bool:
+        text = " ".join(str(v) for v in values if v is not None).lower()
+        keywords = [
+            "信创", "麒麟", "kylin", "银河麒麟", "统信", "uos", "deepin",
+            "达梦", "dameng", "dmserver", "人大金仓", "kingbase", "tongweb", "东方通",
+        ]
+        return any(keyword.lower() in text for keyword in keywords)
+
+    @staticmethod
+    def _detect_xinchuang_summary(checks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        related = [item for item in checks if item.get("is_xinchuang")]
+        failed = [item for item in related if not item.get("passed")]
+
+        components: Dict[str, int] = {}
+        keywords = {
+            "kylin": ["麒麟", "kylin", "银河麒麟"],
+            "uos": ["统信", "uos", "deepin"],
+            "dameng": ["达梦", "dameng", "dmserver"],
+            "kingbase": ["金仓", "kingbase", "人大金仓"],
+            "tongweb": ["tongweb", "东方通"],
+        }
+        for item in related:
+            text = " ".join(str(item.get(k, "")) for k in [
+                "name", "category", "description", "target", "affected_target", "remediation"
+            ]).lower()
+            for component, words in keywords.items():
+                if any(w.lower() in text for w in words):
+                    components[component] = components.get(component, 0) + 1
+
+        return {
+            "total": len(related),
+            "passed": len(related) - len(failed),
+            "failed": len(failed),
+            "enabled": len(related) > 0,
+            "components": components,
+            "samples": [
+                {
+                    "name": item.get("name"),
+                    "category": item.get("category"),
+                    "passed": item.get("passed"),
+                    "source": item.get("source"),
+                }
+                for item in related[:10]
+            ],
+        }
+
     @staticmethod
     def _check_password_policy() -> List[Dict[str, Any]]:
         """检查密码策略 - 基于熵检查"""

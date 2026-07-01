@@ -11,6 +11,7 @@ import subprocess
 import urllib.request
 import urllib.error
 import ssl
+import logging
 from typing import List, Dict, Any, Optional
 
 try:
@@ -32,7 +33,8 @@ if core_dir not in sys.path:
 try:
     from poc_verifier import PocVerifier
 except ImportError as e:
-    print(f"⚠️ 无法导入 PocVerifier: {e}")
+    PocVerifier = None
+    logging.getLogger("service_detector").warning("无法导入 PocVerifier: %s", e)
 
 
 # ============================================================
@@ -55,11 +57,15 @@ class ServiceDetector(BaseDetector):
 
     def __init__(self, rules_dir: str = "core/rules"):
         super().__init__(rules_dir)
-        try:
-            self.verifier = PocVerifier()
-        except Exception as e:
-            print(f"⚠️ PocVerifier 初始化失败，将跳过网络服务实锤: {e}")
+        if PocVerifier is None:
             self.verifier = None
+            self.logger.warning("PocVerifier 不可用，将跳过网络服务实锤")
+        else:
+            try:
+                self.verifier = PocVerifier()
+            except Exception as e:
+                self.logger.warning("PocVerifier 初始化失败，将跳过网络服务实锤: %s", e)
+                self.verifier = None
 
     def get_detector_name(self) -> str:
         return "service_detector"
@@ -72,18 +78,18 @@ class ServiceDetector(BaseDetector):
         vulnerabilities = []
         rules = self.rules.get("rules", [])
 
-        print("[INFO] 📡 启动网络雷达，探测存活服务与端口...")
+        self.logger.info("启动网络雷达，探测存活服务与端口")
         live_services = self._get_live_services()
 
         if not live_services:
-            print("[WARN] 未探测到任何对外开放的网络服务")
+            self.logger.warning("未探测到任何对外开放的网络服务")
             return []
 
         # 对每个存活服务做一次 HTTP 指纹识别，覆盖进程名不可靠的情况
         for service in live_services:
             service["fingerprint"] = self._fingerprint_service(service["url"])
 
-        print(f"[INFO] 🎯 锁定 {len(live_services)} 个存活网络目标，准备接入 Nuclei 武器库")
+        self.logger.info("锁定 %d 个存活网络目标，准备接入 Nuclei 武器库", len(live_services))
 
         for service in live_services:
             match_key = service["fingerprint"] or service["name"]
@@ -116,7 +122,15 @@ class ServiceDetector(BaseDetector):
                             description=f"{rule.get('description', '')}\n\n[实战战果]: Nuclei 已成功通过 {service['url']} 验证此漏洞。",
                             affected_target=f"{service['name']} ({service['port']} 端口, 指纹: {match_key})",
                             remediation=rule.get("remediation", "请立即打补丁或限制端口访问"),
-                            verification_status="verified",
+                            verification_status=self.STATUS_VERIFIED,
+                            verification_method=rule.get("verification_method", "network"),
+                            verification_engine=rule.get("verification_engine", "nuclei_yaml"),
+                            verification_safety=rule.get("verification_safety", "safe_probe"),
+                            requires_oob=rule.get("requires_oob", False),
+                            offline_supported=rule.get("offline_supported", True),
+                            state_changing=rule.get("state_changing", False),
+                            template=rule.get("template"),
+                            evidence={"live_url": service['url'], "fingerprint": match_key},
                             live_url=service['url']
                         )
                         vulnerabilities.append(vuln)
@@ -131,15 +145,23 @@ class ServiceDetector(BaseDetector):
                                                  '端口处于开放状态，但本地武器库暂无该组件的 YAML 验证脚本。'),
                             affected_target=f"{service['name']} ({service['port']} 端口, 指纹: {match_key})",
                             remediation=rule.get("remediation", "建议进行人工排查"),
-                            verification_status="unverified",
+                            verification_status=self.STATUS_UNVERIFIED,
+                            verification_method=rule.get("verification_method", "network"),
+                            verification_engine=rule.get("verification_engine", "nuclei_yaml"),
+                            verification_safety=rule.get("verification_safety", "safe_probe"),
+                            requires_oob=rule.get("requires_oob", False),
+                            offline_supported=rule.get("offline_supported", True),
+                            state_changing=rule.get("state_changing", False),
+                            template=rule.get("template"),
+                            evidence={"live_url": service['url'], "fingerprint": match_key, "reason": "no_yaml_or_not_verified"},
                             live_url=service['url']
                         )
                         vulnerabilities.append(vuln)
 
                 except Exception as e:
-                    print(f"  [ERROR] Nuclei 验证服务 {service['name']} 时出错: {e}")
+                    self.logger.warning("Nuclei 验证服务 %s 时出错: %s", service['name'], e)
 
-        print(f"[INFO] 📡 网络实战探测完成，捕获 {len(vulnerabilities)} 个威胁")
+        self.logger.info("网络实战探测完成，捕获 %d 个威胁", len(vulnerabilities))
         return vulnerabilities
 
     def _get_live_services(self) -> List[Dict]:
@@ -175,8 +197,8 @@ class ServiceDetector(BaseDetector):
                     "port": port_str,
                     "url": f"{protocol}://127.0.0.1:{port_str}"
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning("服务探测失败: %s", e)
 
         unique_services = {f"{s['name']}:{s['port']}": s for s in live_services}
         return list(unique_services.values())
@@ -203,10 +225,10 @@ class ServiceDetector(BaseDetector):
                 if any(kw.lower() in haystack for kw in keywords):
                     return fp_key
 
-        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError):
-            pass
-        except Exception:
-            pass
+        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, TimeoutError) as e:
+            self.logger.debug("HTTP指纹识别失败 %s: %s", url, e)
+        except Exception as e:
+            self.logger.warning("HTTP指纹识别异常 %s: %s", url, e)
 
         return None
 

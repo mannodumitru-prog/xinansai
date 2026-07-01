@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import pwd
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
@@ -33,10 +34,10 @@ class ThreatDetector(BaseDetector):
         vulnerabilities = []
         rules = self.rules.get("rules", [])
         if not rules:
-            print("[WARN] 未加载到威胁检测规则")
+            self.logger.warning("未加载到威胁检测规则")
             return []
 
-        print("[INFO] 开始后门排查检测...")
+        self.logger.info("开始后门排查检测")
 
         cron_rules = next((r for r in rules if r.get("check_name") == "suspicious_cron"), None)
         if cron_rules:
@@ -54,7 +55,7 @@ class ThreatDetector(BaseDetector):
         if tmp_rules:
             vulnerabilities.extend(self._check_tmp_executables(tmp_rules))
 
-        print(f"[INFO] 后门排查检测完成，发现 {len(vulnerabilities)} 个问题")
+        self.logger.info("后门排查检测完成，发现 %d 个问题", len(vulnerabilities))
         return vulnerabilities
 
     def _check_cron_jobs(self, rule: Dict) -> List[Dict]:
@@ -80,8 +81,8 @@ class ThreatDetector(BaseDetector):
                     )
                     if result.returncode == 0:
                         cron_locations.append(f"crontab:{user.pw_name}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] 枚举用户 crontab 失败: {e}")
 
         for location in cron_locations:
             try:
@@ -114,12 +115,15 @@ class ThreatDetector(BaseDetector):
                                 description=f"在 [{target_path}] 中发现包含危险关键词 '{keyword}' 的命令，可能是后门或持久化机制。",
                                 affected_target=target_path,
                                 remediation=rule.get("remediation", "检查并删除可疑的cron条目。"),
-                                keyword=keyword
+                                keyword=keyword,
+                        verification_status=self.STATUS_VERIFIED,
+                        verification_method="cron_keyword_check",
+                        evidence={"location": target_path, "keyword": keyword}
                             )
                             vulnerabilities.append(vuln)
                             break  # 该文件已命中，不再验证其他关键词
             except Exception as e:
-                pass # 忽略读取失败的文件
+                print(f"[WARN] 读取或解析 cron 位置失败 {location}: {e}")
 
         return vulnerabilities
 
@@ -131,7 +135,8 @@ class ThreatDetector(BaseDetector):
             for user in pwd.getpwall():
                 if user.pw_uid >= 1000 or user.pw_name == "root":
                     home_dirs.append((user.pw_name, user.pw_dir))
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] 枚举用户主目录失败: {e}")
             home_dirs = [("root", "/root")]
 
         for username, home in home_dirs:
@@ -149,11 +154,14 @@ class ThreatDetector(BaseDetector):
                             description=f"检测到 {key_file} 中存在异常的大量公钥，可能被植入后门免密登录。",
                             affected_target=key_file,
                             remediation=rule.get("remediation", "删除可疑公钥，并重新生成SSH密钥对。"),
-                            user=username
+                            user=username,
+                        verification_status=self.STATUS_NEEDS_MANUAL_CHECK,
+                        verification_method="ssh_authorized_keys_check",
+                        evidence={"user": username, "key_file": key_file}
                         )
                         vulnerabilities.append(vuln)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[WARN] 读取 SSH authorized_keys 失败 {key_file}: {e}")
 
         return vulnerabilities
 
@@ -194,8 +202,8 @@ class ThreatDetector(BaseDetector):
                         creation_time=ctime.isoformat()
                     )
                     vulnerabilities.append(vuln)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] 最近 SUID 文件扫描失败: {e}")
 
         return vulnerabilities
 
@@ -219,8 +227,8 @@ class ThreatDetector(BaseDetector):
                         remediation=rule.get("remediation", "审查文件内容，如非必要请立即删除。")
                     )
                     vulnerabilities.append(vuln)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WARN] /tmp 可执行文件扫描失败: {e}")
 
         return vulnerabilities
 

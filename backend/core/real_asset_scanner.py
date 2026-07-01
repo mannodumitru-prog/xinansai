@@ -12,11 +12,168 @@ import json
 import re
 import psutil
 import uuid
+import shlex
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+
+
+# 资产名称规范化说明：
+# CveDetector 中维护了信创/国产发行版包名到 NVD 软件名的映射。
+# 资产扫描模块只“复用映射结果”，不迁移漏洞匹配逻辑，避免两套规则漂移。
+_FALLBACK_ALIAS_MAP = {
+    "openssl": ["openssl", "libssl3", "libssl3t64", "libssl1.1", "libssl-dev"],
+    "openssh": ["openssh-server", "openssh-client", "openssh-sftp-server", "libssh2-1", "libssh-4"],
+    "glibc": ["libc6", "libc6-dev", "libc-bin", "glibc"],
+    "curl": ["curl", "libcurl4", "libcurl4t64", "libcurl3", "libcurl4-openssl-dev"],
+    "nginx": ["nginx", "nginx-core", "nginx-full", "nginx-common"],
+    "apache2": ["apache2", "apache2-bin", "apache2-utils"],
+    "mysql": ["mysql-server", "mysql-client", "mysql-common", "mariadb-server", "mariadb-client"],
+    "postgresql": ["postgresql", "postgresql-common", "postgresql-client", "libpq5"],
+    "sudo": ["sudo", "sudo-ldap"],
+    "systemd": ["systemd", "libsystemd0", "systemd-sysv", "udev"],
+    "polkit": ["polkit", "policykit-1", "libpolkit-agent-1-0", "libpolkit-gobject-1-0"],
+    "python": ["python3", "python3-minimal", "python3-dev", "python2.7"],
+    "bash": ["bash"],
+    "dbus": ["dbus", "libdbus-1-3"],
+    "pam": ["libpam0g", "libpam-modules", "libpam-runtime"],
+    "docker": ["docker.io", "docker-ce", "docker-ce-cli", "docker-compose", "docker-compose-plugin"],
+    "containerd": ["containerd", "containerd.io"],
+    "runc": ["runc"],
+}
+
+_XINCHUANG_KEYWORDS = [
+    "kylin", "麒麟", "uos", "统信", "deepin", "openEuler", "openeuler",
+    "anolis", "龙蜥", "loongnix", "loongarch", "兆芯", "飞腾", "鲲鹏", "海光"
+]
 
 class RealAssetScanner:
     """真实资产扫描器 - 生产环境实现"""
+
+    COMMAND_TIMEOUT = 30
+
+    @staticmethod
+    def _run_command(cmd: List[str], timeout: int = None) -> Tuple[int, str, str]:
+        """统一执行外部命令，避免各扫描函数重复处理 subprocess 异常。"""
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout or RealAssetScanner.COMMAND_TIMEOUT
+            )
+            return result.returncode, result.stdout or "", result.stderr or ""
+        except FileNotFoundError:
+            return 127, "", f"command not found: {cmd[0]}"
+        except subprocess.TimeoutExpired:
+            return 124, "", f"command timeout: {' '.join(cmd)}"
+        except Exception as e:
+            return 1, "", str(e)
+
+    @staticmethod
+    def _load_cve_alias_reverse_map() -> Dict[str, str]:
+        """复用 CveDetector 的包名映射；失败时使用轻量兜底映射。"""
+        try:
+            try:
+                from core.detectors.cve_detector import PACKAGE_ALIAS_MAP
+            except Exception:
+                from detectors.cve_detector import PACKAGE_ALIAS_MAP
+            alias_map = PACKAGE_ALIAS_MAP
+        except Exception:
+            alias_map = _FALLBACK_ALIAS_MAP
+
+        reverse = {}
+        for normalized_name, names in alias_map.items():
+            reverse.setdefault(normalized_name.lower(), normalized_name.lower())
+            for name in names:
+                reverse.setdefault(str(name).lower(), normalized_name.lower())
+        return reverse
+
+    @staticmethod
+    def _normalize_security_name(package_name: str) -> Optional[str]:
+        """将系统包名规范化为 CVE/NVD 维度的软件名，仅用于资产展示对齐。"""
+        if not package_name:
+            return None
+
+        name = str(package_name).lower().strip()
+        reverse = RealAssetScanner._load_cve_alias_reverse_map()
+
+        if name in reverse:
+            return reverse[name]
+
+        stripped = re.sub(r'[\d]+t?\d*$', '', name).rstrip('-')
+        if stripped in reverse:
+            return reverse[stripped]
+
+        base = re.sub(
+            r'-(dev|common|bin|doc|utils|client|server|core|minimal|full|extras|light|static|dbg|debug|modules|runtime|plugin|tools|headers|libs|data)$',
+            '',
+            name
+        )
+        if base in reverse:
+            return reverse[base]
+
+        return None
+
+    @staticmethod
+    def _enrich_software_entry(software: Dict[str, Any]) -> Dict[str, Any]:
+        """补充资产规范化字段，不改变原始 name，保证前端兼容。"""
+        raw_name = software.get("raw_name") or software.get("name", "")
+        software["raw_name"] = raw_name
+
+        security_name = RealAssetScanner._normalize_security_name(raw_name)
+        if security_name:
+            software["security_name"] = security_name
+            software["normalized_name"] = security_name
+            software["xinchuang_package_mapped"] = str(raw_name).lower() != security_name
+        else:
+            software.setdefault("security_name", software.get("name", "unknown"))
+            software.setdefault("normalized_name", software.get("name", "unknown"))
+            software["xinchuang_package_mapped"] = False
+
+        return software
+
+    @staticmethod
+    def _get_linux_distribution_info() -> Dict[str, Any]:
+        """读取 /etc/os-release，识别银河麒麟、统信 UOS、Deepin、openEuler 等信创环境。"""
+        info = {
+            "distribution": "Unknown",
+            "distribution_version": "Unknown",
+            "distribution_id": "unknown",
+            "is_xinchuang_os": False,
+            "xinchuang_keywords": []
+        }
+
+        if platform.system().lower() != "linux":
+            return info
+
+        try:
+            os_release = "/etc/os-release"
+            if not os.path.exists(os_release):
+                return info
+
+            data = {}
+            with open(os_release, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    data[key] = value.strip().strip('"')
+
+            combined = " ".join(str(v) for v in data.values())
+            matched = [kw for kw in _XINCHUANG_KEYWORDS if kw.lower() in combined.lower()]
+            info.update({
+                "distribution": data.get("PRETTY_NAME") or data.get("NAME") or "Unknown",
+                "distribution_version": data.get("VERSION_ID") or data.get("VERSION") or "Unknown",
+                "distribution_id": data.get("ID", "unknown"),
+                "is_xinchuang_os": len(matched) > 0,
+                "xinchuang_keywords": matched
+            })
+        except Exception as e:
+            info["distribution_error"] = str(e)
+
+        return info
+
     
     @staticmethod
     def scan_assets() -> Dict[str, Any]:
@@ -40,6 +197,8 @@ class RealAssetScanner:
             assets["services"] = RealAssetScanner._scan_running_services()
             assets["network_info"] = RealAssetScanner._scan_network_info()
             assets["hardware_info"] = RealAssetScanner._scan_hardware_info()
+            assets["summary"] = RealAssetScanner._generate_asset_summary(assets)
+            assets["success"] = True
             
             print(f"✅ 资产扫描完成: {len(assets['software'])}软件, {len(assets['services'])}服务")
             return assets
@@ -79,6 +238,9 @@ class RealAssetScanner:
                 "python_version": platform.python_version()
             }
             
+            # 识别发行版与信创环境
+            system_info.update(RealAssetScanner._get_linux_distribution_info())
+            
             # 获取详细的CPU信息
             try:
                 if platform.system().lower() == "linux":
@@ -92,7 +254,7 @@ class RealAssetScanner:
                         freq_match = re.search(r'cpu MHz\s*:\s*(.+)', cpu_info)
                         if freq_match:
                             system_info["cpu_frequency_mhz"] = float(freq_match.group(1).strip())
-            except:
+            except Exception:
                 system_info["cpu_model"] = "Unknown"
             
             # 获取磁盘信息
@@ -160,14 +322,11 @@ class RealAssetScanner:
         
         # dpkg (Debian/Ubuntu)
         try:
-            result = subprocess.run(
-                ['dpkg-query', '-W', '-f=${Package} ${Version} ${Architecture}\n'], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
+            rc, stdout, stderr = RealAssetScanner._run_command(
+                ['dpkg-query', '-W', '-f=${Package} ${Version} ${Architecture}\n'], timeout=30
             )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+            if rc == 0:
+                for line in stdout.split('\n'):
                     if line.strip():
                         parts = line.split()
                         if len(parts) >= 2:
@@ -188,14 +347,11 @@ class RealAssetScanner:
         
         # rpm (RedHat/CentOS/Fedora)
         try:
-            result = subprocess.run(
-                ['rpm', '-qa', '--queryformat', '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n'], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
+            rc, stdout, stderr = RealAssetScanner._run_command(
+                ['rpm', '-qa', '--queryformat', '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n'], timeout=30
             )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+            if rc == 0:
+                for line in stdout.split('\n'):
                     if line.strip():
                         parts = line.split()
                         if len(parts) >= 2:
@@ -217,14 +373,9 @@ class RealAssetScanner:
         
         # pacman (Arch Linux)
         try:
-            result = subprocess.run(
-                ['pacman', '-Q'], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
-            )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+            rc, stdout, stderr = RealAssetScanner._run_command(['pacman', '-Q'], timeout=30)
+            if rc == 0:
+                for line in stdout.split('\n'):
                     if line.strip():
                         name, version = line.split()[:2]
                         packages.append({
@@ -254,14 +405,9 @@ class RealAssetScanner:
         
         for cmd in pip_commands:
             try:
-                result = subprocess.run(
-                    cmd, 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=30
-                )
-                if result.returncode == 0:
-                    pip_packages = json.loads(result.stdout)
+                rc, stdout, stderr = RealAssetScanner._run_command(cmd, timeout=30)
+                if rc == 0:
+                    pip_packages = json.loads(stdout)
                     for pkg in pip_packages:
                         packages.append({
                             "name": pkg['name'],
@@ -307,14 +453,9 @@ class RealAssetScanner:
         
         # 检查全局安装的npm包
         try:
-            result = subprocess.run(
-                ['npm', 'list', '-g', '--json', '--depth=0'], 
-                capture_output=True, 
-                text=True, 
-                timeout=30
-            )
-            if result.returncode == 0:
-                npm_data = json.loads(result.stdout)
+            rc, stdout, stderr = RealAssetScanner._run_command(['npm', 'list', '-g', '--json', '--depth=0'], timeout=30)
+            if rc == 0:
+                npm_data = json.loads(stdout)
                 deps = npm_data.get('dependencies', {})
                 for name, info in deps.items():
                     if isinstance(info, dict):
@@ -338,14 +479,11 @@ class RealAssetScanner:
         
         # 扫描运行的Docker容器
         try:
-            result = subprocess.run(
-                ['docker', 'ps', '--format', '{{.Names}} {{.Image}} {{.Status}}'], 
-                capture_output=True, 
-                text=True, 
-                timeout=15
+            rc, stdout, stderr = RealAssetScanner._run_command(
+                ['docker', 'ps', '--format', '{{.Names}} {{.Image}} {{.Status}}'], timeout=15
             )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+            if rc == 0:
+                for line in stdout.split('\n'):
                     if line.strip():
                         parts = line.split()
                         if len(parts) >= 2:
@@ -372,14 +510,11 @@ class RealAssetScanner:
         
         # 扫描Docker镜像
         try:
-            result = subprocess.run(
-                ['docker', 'images', '--format', '{{.Repository}} {{.Tag}} {{.ID}}'], 
-                capture_output=True, 
-                text=True, 
-                timeout=15
+            rc, stdout, stderr = RealAssetScanner._run_command(
+                ['docker', 'images', '--format', '{{.Repository}} {{.Tag}} {{.ID}}'], timeout=15
             )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+            if rc == 0:
+                for line in stdout.split('\n'):
                     if line.strip():
                         repository, tag, image_id = line.split()[:3]
                         packages.append({
@@ -498,14 +633,11 @@ class RealAssetScanner:
         
         try:
             # 扫描活动的systemd服务
-            result = subprocess.run(
-                ['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend'],
-                capture_output=True, 
-                text=True, 
-                timeout=10
+            rc, stdout, stderr = RealAssetScanner._run_command(
+                ['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend'], timeout=10
             )
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
+            if rc == 0:
+                for line in stdout.split('\n'):
                     if line.strip():
                         parts = line.split()
                         if len(parts) >= 1:
@@ -563,7 +695,7 @@ class RealAssetScanner:
                     addrs = psutil.net_if_stats()
                     if interface in addrs:
                         interface_info["status"] = "up" if addrs[interface].isup else "down"
-                except:
+                except Exception:
                     pass
                 
                 network_info.append(interface_info)
@@ -620,16 +752,44 @@ class RealAssetScanner:
     
     @staticmethod
     def _deduplicate_software(software_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """软件去重处理"""
+        """软件去重处理，并补充与 CVE Detector 对齐的规范化字段。"""
         seen = set()
         deduplicated = []
         
         for software in software_list:
-            # 基于名称和版本创建唯一标识
-            identifier = f"{software['name']}-{software['version']}-{software.get('package_manager', '')}"
+            if not isinstance(software, dict):
+                continue
+
+            software = RealAssetScanner._enrich_software_entry(software)
+            name = str(software.get('name', 'unknown')).lower()
+            version = str(software.get('version', 'unknown')).lower()
+            package_manager = str(software.get('package_manager', '')).lower()
+            software_type = str(software.get('type', '')).lower()
+
+            # 基于名称、版本、来源和类型创建唯一标识
+            identifier = f"{name}-{version}-{package_manager}-{software_type}"
             
             if identifier not in seen:
                 seen.add(identifier)
                 deduplicated.append(software)
         
         return deduplicated
+
+    @staticmethod
+    def _generate_asset_summary(assets: Dict[str, Any]) -> Dict[str, Any]:
+        """生成资产摘要，供前端和报告直接使用。"""
+        software = assets.get("software", []) if isinstance(assets, dict) else []
+        services = assets.get("services", []) if isinstance(assets, dict) else []
+        system_info = assets.get("system_info", {}) if isinstance(assets, dict) else {}
+
+        mapped_count = sum(1 for item in software if isinstance(item, dict) and item.get("xinchuang_package_mapped"))
+        network_service_count = sum(1 for item in services if isinstance(item, dict) and item.get("type") == "network_service")
+
+        return {
+            "software_count": len(software),
+            "service_count": len(services),
+            "network_service_count": network_service_count,
+            "xinchuang_package_mapped_count": mapped_count,
+            "is_xinchuang_os": bool(system_info.get("is_xinchuang_os", False)),
+            "distribution": system_info.get("distribution", "Unknown")
+        }

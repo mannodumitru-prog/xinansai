@@ -44,6 +44,7 @@ if core_dir not in sys.path:
 try:
     from poc_verifier import PocVerifier
 except ImportError as e:
+    PocVerifier = None
     print(f"⚠️ 无法导入 PocVerifier: {e}")
 
 class PrivilegeEscalationDetector(BaseDetector):
@@ -52,11 +53,15 @@ class PrivilegeEscalationDetector(BaseDetector):
     def __init__(self, rules_dir: str = "core/rules"):
         super().__init__(rules_dir)
         # 复用 PocVerifier，让提权检测器也能调用 PoC 实锤
-        try:
-            self.verifier = PocVerifier()
-        except Exception as e:
-            print(f"⚠️ PocVerifier 初始化失败，将跳过 PoC 验证: {e}")
+        if PocVerifier is None:
             self.verifier = None
+            print("⚠️ PocVerifier 不可用，将跳过 PoC 验证")
+        else:
+            try:
+                self.verifier = PocVerifier()
+            except Exception as e:
+                print(f"⚠️ PocVerifier 初始化失败，将跳过 PoC 验证: {e}")
+                self.verifier = None
 
     def get_detector_name(self) -> str:
         return "privilege_escalation_detector"
@@ -122,7 +127,11 @@ class PrivilegeEscalationDetector(BaseDetector):
                         remediation=rule.get("remediation",
                                              f"执行 `chmod u-s {suid_file}` 移除SUID位。"),
                         binary=base_name,
-                        verification_status="verified"
+                        verification_status="verified",
+                        verification_method=rule.get("verification_method", "local"),
+                        verification_engine=rule.get("verification_engine", "state_check"),
+                        verification_safety=rule.get("verification_safety", "safe_probe"),
+                        offline_supported=rule.get("offline_supported", True)
                     )
                     vulnerabilities.append(vuln)
 
@@ -162,7 +171,11 @@ class PrivilegeEscalationDetector(BaseDetector):
                         remediation=rule.get("remediation",
                                              "编辑/etc/sudoers，移除NOPASSWD或!authenticate等危险选项。"),
                         matched_pattern=pattern,
-                        verification_status="verified"
+                        verification_status="verified",
+                        verification_method=rule.get("verification_method", "local"),
+                        verification_engine=rule.get("verification_engine", "state_check"),
+                        verification_safety=rule.get("verification_safety", "safe_probe"),
+                        offline_supported=rule.get("offline_supported", True)
                     )
                     vulnerabilities.append(vuln)
                     break
@@ -427,7 +440,12 @@ class PrivilegeEscalationDetector(BaseDetector):
             cvss_score=cve_rule.get("cvss_score", 0.0),
             references=cve_rule.get("references", []),
             tags=["kernel", "privilege_escalation", cve_id.lower().replace("-", "_")],
-            verification_status=status
+            verification_status=status,
+            verification_method=cve_rule.get("verification_method", "local"),
+            verification_engine=cve_rule.get("verification_engine", "python_probe"),
+            verification_safety=cve_rule.get("verification_safety", "environment_probe"),
+            poc_file=cve_rule.get("poc_file"),
+            offline_supported=cve_rule.get("offline_supported", True)
         )
 
     # ----------------------------------------------------------------

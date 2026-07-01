@@ -16,7 +16,12 @@
                     "version_end_excluding": "1.0.2g-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2016-0705.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "safe_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2016-0746",
@@ -1040,7 +1045,12 @@
                     "version_end_excluding": "0"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2022-2274.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2022-23218",
@@ -1057,7 +1067,12 @@
                     "version_end_excluding": "2.33-3"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2022-23218-23219.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2022-23219",
@@ -1074,7 +1089,12 @@
                     "version_end_excluding": "2.33-3"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2022-23218-23219.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2022-2526",
@@ -1286,7 +1306,12 @@
                     "version_end_excluding": "6.8.11-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2024-36031.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2024-38541",
@@ -1379,7 +1404,12 @@
                     "version_end_excluding": "6.17.12-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2025-68263.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "environment_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2026-23112",
@@ -1654,7 +1684,12 @@
                     "version_end_excluding": "6.19.14-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2026-31607.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "environment_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2026-31608",
@@ -4816,7 +4851,12 @@
                     "version_end_excluding": "7.0.4-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2026-43284.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2026-43322",
@@ -4943,7 +4983,12 @@
                     "version_end_excluding": "7.0.9-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2026-43503.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2026-45447",
@@ -10481,7 +10526,12 @@
                     "version_end_excluding": "4.19.37-6"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2019-13272.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2019-14814",
@@ -11660,7 +11710,12 @@
                     "version_end_excluding": "5.10.38-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2021-22555.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2021-23134",
@@ -11798,7 +11853,12 @@
                     "version_end_excluding": "1.8.31-r1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2021-3156.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "safe_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2021-33033",
@@ -11962,7 +12022,12 @@
                     "version_end_excluding": "5.10.38-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2021-3493.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2021-35039",
@@ -14857,7 +14922,12 @@
                     "version_end_excluding": "5.18.16-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2022-2588.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "environment_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2022-2639",
@@ -20526,7 +20596,12 @@
                     "version_end_excluding": "6.1.11-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2023-0386.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "environment_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2023-0461",
@@ -21505,7 +21580,12 @@
                     "version_end_excluding": "2.37-12"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2023-4911.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "safe_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2023-4921",
@@ -25932,7 +26012,12 @@
                     "version_end_excluding": "6.6.15-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2024-1086.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "environment_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2024-22705",
@@ -67224,7 +67309,12 @@
                     "version_end_excluding": "4.7.8-1"
                 }
             ],
-            "remediation": "Upgrade target components to fixed secure version."
+            "remediation": "Upgrade target components to fixed secure version.",
+            "poc_file": "pocs/CVE-2016-5195.py",
+            "verification_method": "local",
+            "verification_engine": "python_probe",
+            "verification_safety": "version_probe",
+            "offline_supported": true
         },
         {
             "cve_id": "CVE-2016-6786",
