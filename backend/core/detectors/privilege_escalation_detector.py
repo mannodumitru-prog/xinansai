@@ -32,13 +32,19 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from base_detector import BaseDetector
 
-# 安全导入 PoC 验证引擎（复用 cve_detector 的 PocVerifier）
-try:
-    from ..poc_verifier import PocVerifier
-except ImportError:
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from poc_verifier import PocVerifier
+# 动态获取当前文件 (detector) 所在目录的父目录 (即 core 目录)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+core_dir = os.path.dirname(current_dir)
 
+# 将 core 目录安全地加入系统的环境变量中
+if core_dir not in sys.path:
+    sys.path.insert(0, core_dir)
+
+# 现在可以直接导入了，IDE 既不会画红线，运行也不会报错！
+try:
+    from poc_verifier import PocVerifier
+except ImportError as e:
+    print(f"⚠️ 无法导入 PocVerifier: {e}")
 
 class PrivilegeEscalationDetector(BaseDetector):
     """提权风险检测器"""
@@ -241,7 +247,7 @@ class PrivilegeEscalationDetector(BaseDetector):
         若有 PoC 脚本则进一步实锤。
         """
         cve_id = cve_rule.get("cve_id", "CVE-2021-4034")
-        pkexec_paths = ["/usr/bin/pkexec", "/usr/local/bin/pkexec"]
+        pkexec_paths = ["/usr/bin/pkexec", "/usr/pocs/bin/pkexec"]
         pkexec_found = None
 
         for path in pkexec_paths:
@@ -381,7 +387,7 @@ class PrivilegeEscalationDetector(BaseDetector):
         if not self.verifier:
             return None
         try:
-            result = self.verifier.verify(cve_id, {})
+            result = self.verifier.verify(cve_id, {}, target_type="pocs")
             if result is True:
                 return ("verified", "PoC实锤验证成功")
             elif result is False:

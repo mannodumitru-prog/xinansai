@@ -1,0 +1,62 @@
+{
+    "version": "1.0.36",
+    "last_updated": "2026-06-28T15:52:26.086543",
+    "files": {
+        "privilege_escalation_rules.json": {
+            "version": "1.0.0",
+            "sha256": "c78bb9df0849e9342e065aedab4fc7f1aef58b96afa84d574d3dc5115e036df8"
+        },
+        "threat_rules.json": {
+            "version": "1.0.0",
+            "sha256": "9209ce71e8facca2e9de15d33aaf9777f28f034620b479417b7ff7a3cc661eab"
+        },
+        "file_integrity_rules.json": {
+            "version": "1.0.0",
+            "sha256": "92dc01d360c61b99d04a22b23eec3e069a45e256bace1b1e62d96bf71bf826b7"
+        },
+        "weak_password_rules.json": {
+            "version": "1.0.0",
+            "sha256": "94f5be161e0d3b4966cce3c21a5a6c71256e93689dfd9a73646cff57bdaac40d"
+        },
+        "cve_rules.json": {
+            "version": "1.0.0",
+            "sha256": "d0f7b06bbd05906daa49112ce2d6868a34c1255daa3bdb5eb9110870d122a174"
+        },
+        "service_rules.json": {
+            "version": "1.0.0",
+            "sha256": "daca6dae81d58e16a48df30b537d304929d30f7e12c12e2f83548b14fa1a879c"
+        },
+        "config_rules.json": {
+            "version": "1.0.0",
+            "sha256": "8ea0f495c13b3695b47af519299cf76b3c00b2acd33d345ba6d7ba68137091b4"
+        },
+        "yaml_pocs/cve-test-1234.yaml": {
+            "version": "1.0.0",
+            "sha256": "b75b88b4d2a17b8c41efacaa80d278bb0cfadb4ecc50d4acfe9313b1a372b60e"
+        },
+        "pocs/CVE-2021-3156.py": {
+            "version": "1.0.0",
+            "sha256": "b8aa049aa3ab5c1b37793a2ae171b7baf8c403bc4313487458deffac0487b9e6"
+        },
+        "pocs/CVE-2021-4034.py": {
+            "version": "1.0.0",
+            "sha256": "50bd3443b0c011e21575b314723dd17141046b3b8e4f280a9290f9557815f67d"
+        },
+        "pocs/CVE-2024-36031.py": {
+            "version": "1.0.0",
+            "sha256": "b8810dea1d54b8d8c859c35dd1faa70d83735a23bb292416cb084dc12fa67f24"
+        },
+        "pocs/CVE-2016-0705.py": {
+            "version": "1.0.0",
+            "sha256": "14402781f751e167a162b680678cd2df3652623a155c6cfea348597a0508e359"
+        },
+        "pocs/CVE-2022-2274.py": {
+            "version": "1.0.0",
+            "sha256": "3393c8cbc057843935b92127ae7c5d77a24f8bc9133d8955c91781025447375b"
+        },
+        "pocs/CVE-2022-23218-23219.py": {
+            "version": "1.0.0",
+            "sha256": "b48cffd8f3e7c98dcbbe088ec527779690d485d80850c31df4510f133b7ba2a3"
+        }
+    }
+}

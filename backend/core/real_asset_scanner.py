@@ -404,7 +404,7 @@ class RealAssetScanner:
         lib_paths = [
             '/usr/lib',
             '/usr/lib64', 
-            '/usr/local/lib',
+            '/usr/pocs/lib',
             '/lib',
             '/lib64'
         ]
