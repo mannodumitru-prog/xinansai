@@ -34,6 +34,19 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
+# 兼容部分 Python3.8/OpenSSL 环境中 hashlib.md5 不支持 usedforsecurity 参数的问题。
+try:
+    import hashlib as _seckeeper_hashlib
+    import reportlab.pdfbase.pdfdoc as _seckeeper_pdfdoc
+
+    def _seckeeper_md5_compat(*args, **kwargs):
+        kwargs.pop("usedforsecurity", None)
+        return _seckeeper_hashlib.md5(*args, **kwargs)
+
+    _seckeeper_pdfdoc.md5 = _seckeeper_md5_compat
+except Exception:
+    pass
+
 
 class _SecKeeperDivider(Flowable):
     """兼容老版 ReportLab 的水平分割线。"""
@@ -383,11 +396,92 @@ class ReportGeneratorFixedSafe:
 
     @staticmethod
     def _get_vulnerability_list(scan_data_or_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        payload = scan_data_or_payload
-        if isinstance(payload, dict) and "vulnerabilities" in payload and isinstance(payload.get("vulnerabilities"), dict):
-            payload = payload.get("vulnerabilities", {})
-        vulns = payload.get("vulnerabilities", []) if isinstance(payload, dict) else []
-        return [v for v in vulns if isinstance(v, dict)]
+        """读取漏洞明细列表，优先兼容当前 app.py 的实际 scan_data 结构。
+
+        当前后端 /api/report 直接把前端 POST 的扫描结果传入 PDF 生成器；
+        app.py 中漏洞扫描结果的结构是：
+
+            scan_data["vulnerabilities"] = {
+                "scan_summary": {...},
+                "details": [...],
+                "vulnerabilities": [...],
+                "verification_summary": {...}
+            }
+
+        因此第五/第六部分必须优先读取 details / vulnerabilities 里的列表。
+        旧版递归识别会因为字段差异把真实漏洞过滤成空，导致“统计有 13 项，
+        详情却显示无漏洞”。这里改为“明确路径优先 + 宽松兜底”，不再依赖
+        过严的 looks_like_vuln 判断。
+        """
+
+        def normalize_list(value: Any) -> List[Dict[str, Any]]:
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            return []
+
+        def dedupe(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            result: List[Dict[str, Any]] = []
+            seen = set()
+            for v in items:
+                key = (
+                    str(v.get("vuln_id") or v.get("vulnerability_id") or v.get("cve_id") or v.get("cve") or v.get("id") or ""),
+                    str(v.get("title") or v.get("name") or v.get("vuln_name") or v.get("description") or "")[:80],
+                    str(v.get("affected_target") or v.get("target") or v.get("package") or v.get("service") or v.get("affected_targets") or "")[:80],
+                )
+                # 如果没有任何稳定字段，使用对象内容兜底，避免不同漏洞被误合并。
+                if not any(key):
+                    key = (str(sorted(v.items()))[:180], "", "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append(v)
+            return result
+
+        def collect_from_payload(payload: Any) -> List[Dict[str, Any]]:
+            # 直接就是漏洞列表。
+            direct = normalize_list(payload)
+            if direct:
+                return direct
+            if not isinstance(payload, dict):
+                return []
+
+            # 当前 app.py 聚合后的标准结构：优先 details，其次 vulnerabilities。
+            for key in ("details", "vulnerabilities", "vulns", "vuln_list", "vulnerability_list"):
+                items = normalize_list(payload.get(key))
+                if items:
+                    return items
+
+            # 兼容其它可能的明细字段。
+            for key in (
+                "results", "findings", "items", "data", "list", "risks", "risk_items",
+                "verified_vulnerabilities", "unverified_vulnerabilities",
+                "candidate_vulnerabilities", "detected_vulnerabilities",
+                "confirmed", "verified", "unverified", "suspected", "candidates",
+            ):
+                items = normalize_list(payload.get(key))
+                if items:
+                    return items
+
+            return []
+
+        if isinstance(scan_data_or_payload, list):
+            return dedupe(normalize_list(scan_data_or_payload))
+
+        if not isinstance(scan_data_or_payload, dict):
+            return []
+
+        # 情况 1：传入完整 scan_data。
+        vuln_payload = scan_data_or_payload.get("vulnerabilities")
+        items = collect_from_payload(vuln_payload)
+        if items:
+            return dedupe(items)
+
+        # 情况 2：传入的本身就是漏洞 payload，例如 {details: [...]}。
+        items = collect_from_payload(scan_data_or_payload)
+        if items:
+            return dedupe(items)
+
+        return []
 
     @staticmethod
     def _get_compliance_checks(compliance_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -400,11 +494,11 @@ class ReportGeneratorFixedSafe:
     def _normalize_verify_status(vuln: Dict[str, Any]) -> str:
         status = vuln.get("verification_status") or vuln.get("verify_status") or vuln.get("status") or "unverified"
         status = str(status).strip().lower()
-        if status in {"need_confirmation", "manual_check", "needs_check", "need_manual_check"}:
+        if status in {"need_confirmation", "manual_check", "needs_check", "need_manual_check", "needs_manual_check", "pending_manual", "待确认", "待人工确认", "人工确认"}:
             return "needs_manual_check"
-        if status in {"true", "confirmed", "success"}:
+        if status in {"true", "confirmed", "success", "verified", "passed", "pass", "已验证", "验证成功", "通过"}:
             return "verified"
-        if status in {"false", "not_verified"}:
+        if status in {"false", "not_verified", "unverified", "suspected", "candidate", "疑似", "疑似漏洞", "待验证"}:
             return "unverified"
         return status or "unverified"
 
@@ -498,9 +592,54 @@ class ReportGeneratorFixedSafe:
         return host
 
     @staticmethod
+    def _now_report_time() -> datetime:
+        """获取报告生成时的服务器本地时间，不做时区偏移。"""
+        return datetime.now()
+
+    @staticmethod
+    def _format_report_time(value: Any = None, fallback_now: bool = False) -> str:
+        """
+        格式化封面时间。
+        这里不再做 UTC / 北京时间 / 本地时间之间的自动换算：
+        - 扫描时间：优先按 scan_data 传入的时间原样展示，仅规范为 YYYY-MM-DD HH:MM:SS。
+        - 生成时间：使用当前服务器本地时间。
+        这样可以避免前端、后端和服务器时区不一致导致时间被重复加减。
+        """
+        if value in (None, "", "未知"):
+            if fallback_now:
+                return ReportGeneratorFixedSafe._now_report_time().strftime("%Y-%m-%d %H:%M:%S")
+            return "未提供"
+
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+        raw = str(value).strip()
+        raw = raw.replace("T", " ").strip()
+        # 去掉 ISO 时区标记，但不做时间偏移。
+        raw = re.sub(r"Z$", "", raw)
+        raw = re.sub(r"[+-]\d{2}:?\d{2}$", "", raw).strip()
+        # 去掉毫秒。
+        if "." in raw:
+            raw = raw.split(".", 1)[0]
+
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+        ):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+
+        return ReportGeneratorFixedSafe._clean_text(raw)
+
+    @staticmethod
     def _extract_context(scan_data: Dict[str, Any]) -> Dict[str, Any]:
         payload = ReportGeneratorFixedSafe._get_vulnerability_payload(scan_data)
-        vulns = ReportGeneratorFixedSafe._get_vulnerability_list({"vulnerabilities": payload})
+        vulns = ReportGeneratorFixedSafe._get_vulnerability_list(scan_data)
         existing_summary = payload.get("scan_summary") or payload.get("summary") or scan_data.get("scan_summary") or {}
         vuln_summary = ReportGeneratorFixedSafe._compute_vuln_summary(vulns, existing_summary)
         assets = scan_data.get("assets", {}) if isinstance(scan_data.get("assets", {}), dict) else {}
@@ -538,8 +677,10 @@ class ReportGeneratorFixedSafe:
             overall_risk = "低危"
             overall_key = "low"
 
-        scan_time = scan_data.get("timestamp") or scan_data.get("scan_timestamp") or payload.get("scan_timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        scan_id = scan_data.get("scan_id") or payload.get("scan_id") or f"SK-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        raw_scan_time = scan_data.get("timestamp") or scan_data.get("scan_timestamp") or payload.get("scan_timestamp")
+        scan_time = ReportGeneratorFixedSafe._format_report_time(raw_scan_time, fallback_now=True)
+        report_time = ReportGeneratorFixedSafe._now_report_time().strftime("%Y-%m-%d %H:%M:%S")
+        scan_id = scan_data.get("scan_id") or payload.get("scan_id") or f"SK-{ReportGeneratorFixedSafe._now_report_time().strftime('%Y%m%d%H%M%S')}"
 
         categories = compliance.get("categories") if isinstance(compliance.get("categories"), dict) else {}
         if not categories and isinstance(compliance_summary.get("categories"), dict):
@@ -568,6 +709,7 @@ class ReportGeneratorFixedSafe:
             "overall_risk": overall_risk,
             "overall_key": overall_key,
             "scan_time": scan_time,
+            "report_time": report_time,
             "scan_id": scan_id,
             "rule_version": ReportGeneratorFixedSafe._get_rule_version(scan_data),
             "host_info": ReportGeneratorFixedSafe._get_host_info(scan_data),
@@ -905,7 +1047,7 @@ class ReportGeneratorFixedSafe:
         meta = Table([
             ["报告编号", ReportGeneratorFixedSafe._clean_text(ctx["scan_id"])],
             ["扫描时间", ReportGeneratorFixedSafe._clean_text(ctx["scan_time"])],
-            ["生成时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+            ["生成时间", ReportGeneratorFixedSafe._clean_text(ctx.get("report_time") or ReportGeneratorFixedSafe._now_report_time().strftime("%Y-%m-%d %H:%M:%S"))],
         ], colWidths=[1.25 * inch, 3.75 * inch])
         meta.setStyle(TableStyle([
             ("FONT", (0, 0), (-1, -1), ReportGeneratorFixedSafe.CHINESE_FONT),
@@ -974,16 +1116,96 @@ class ReportGeneratorFixedSafe:
 
     @staticmethod
     def _build_risk_statistics(ctx: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List[Any]:
+        """面向用户展示的风险统计。
+
+        原版本将风险等级、验证状态、验证方式和合规结果混在一张横向表中，
+        多个“数量”含义不同，用户阅读时容易混淆。这里拆成四个独立小表，
+        每个表的数量列都明确说明统计对象。
+        """
         vs = ctx["vuln_summary"]
-        data = [
-            ["风险等级", "数量", "验证状态", "数量", "验证方式", "数量", "合规状态", "数量"],
-            ["严重", str(vs.get("critical", 0)), "已验证", str(vs.get("verified", 0)), "本地验证", str(vs.get("local", 0)), "通过", str(ctx["compliance_passed"])],
-            ["高危", str(vs.get("high", 0)), "疑似漏洞", str(vs.get("unverified", 0)), "网络验证", str(vs.get("network", 0)), "未通过", str(ctx["compliance_failed"])],
-            ["中危", str(vs.get("medium", 0)), "待确认", str(vs.get("needs_manual_check", 0)), "版本匹配", str(vs.get("version_match", 0)), "总检查项", str(ctx["compliance_total"])],
-            ["低危", str(vs.get("low", 0)), "-", "-", "-", "-", "合规率", f"{ctx['compliance_rate']}%"],
+
+        risk_rows = [
+            ["风险等级", "风险项数量"],
+            ["严重", str(vs.get("critical", 0))],
+            ["高危", str(vs.get("high", 0))],
+            ["中危", str(vs.get("medium", 0))],
+            ["低危", str(vs.get("low", 0))],
         ]
-        table = ReportGeneratorFixedSafe._make_table(data, [0.82*inch, 0.60*inch, 0.92*inch, 0.60*inch, 0.92*inch, 0.60*inch, 0.92*inch, 0.60*inch], ReportGeneratorFixedSafe.COLOR_NAVY_2, 9.0)
-        return ReportGeneratorFixedSafe._section_title("2. 风险统计", styles) + [table]
+        verify_rows = [
+            ["验证结果", "风险项数量"],
+            ["已验证", str(vs.get("verified", 0))],
+            ["疑似风险", str(vs.get("unverified", 0))],
+            ["待确认", str(vs.get("needs_manual_check", 0))],
+        ]
+        method_rows = [
+            ["验证方式", "风险项数量"],
+            ["本地验证", str(vs.get("local", 0))],
+            ["网络验证", str(vs.get("network", 0))],
+            ["版本匹配", str(vs.get("version_match", 0))],
+        ]
+        compliance_rows = [
+            ["合规检查", "检查项数量 / 比例"],
+            ["通过项", str(ctx["compliance_passed"])],
+            ["未通过项", str(ctx["compliance_failed"])],
+            ["总检查项", str(ctx["compliance_total"])],
+            ["合规率", f"{ctx['compliance_rate']}%"],
+        ]
+
+        def small_table(title: str, rows: List[List[Any]], color: str) -> Table:
+            title_para = Paragraph(title, styles["card_title"])
+            table = ReportGeneratorFixedSafe._make_table(
+                rows,
+                [1.55 * inch, 1.20 * inch],
+                color,
+                9.2,
+            )
+            table.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            box = Table([[title_para], [table]], colWidths=[2.90 * inch], hAlign="LEFT")
+            box.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.55, ReportGeneratorFixedSafe._hex(ReportGeneratorFixedSafe.COLOR_BORDER)),
+                ("LINEABOVE", (0, 0), (-1, 0), 2.0, ReportGeneratorFixedSafe._hex(ReportGeneratorFixedSafe.COLOR_BLUE_DARK)),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ]))
+            return box
+
+        upper = Table([[
+            small_table("风险等级分布", risk_rows, ReportGeneratorFixedSafe.COLOR_NAVY_2),
+            small_table("验证结果统计", verify_rows, ReportGeneratorFixedSafe.COLOR_BLUE_DARK),
+        ]], colWidths=[3.05 * inch, 3.05 * inch], hAlign="LEFT")
+        lower = Table([[
+            small_table("验证方式统计", method_rows, "#0F766E"),
+            small_table("合规检查统计", compliance_rows, ReportGeneratorFixedSafe.COLOR_NAVY_2),
+        ]], colWidths=[3.05 * inch, 3.05 * inch], hAlign="LEFT")
+        for tbl in (upper, lower):
+            tbl.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+
+        total_visible = int(vs.get("verified", 0) or 0) + int(vs.get("unverified", 0) or 0)
+        summary = (
+            f"本节按统计口径拆分展示风险：风险等级分布表示各严重程度的风险项数量；"
+            f"验证结果统计表示已验证、疑似和待确认的风险项数量；"
+            f"合规检查统计表示基线检查项的通过情况。本次已验证和疑似风险共 {total_visible} 项。"
+        )
+        return ReportGeneratorFixedSafe._section_title("2. 风险统计", styles) + [
+            ReportGeneratorFixedSafe._card([[Paragraph(summary, styles["normal"])]], [6.25 * inch], ReportGeneratorFixedSafe.COLOR_BLUE_DARK, "#EEF6FF"),
+            Spacer(1, 10),
+            KeepTogether([upper, Spacer(1, 8)]),
+            KeepTogether([lower]),
+        ]
 
     @staticmethod
     def _build_asset_info(ctx: Dict[str, Any], styles: Dict[str, ParagraphStyle]) -> List[Any]:
@@ -1233,12 +1455,19 @@ class ReportGeneratorFixedSafe:
 
     @staticmethod
     def _filter_user_visible_vulns(vulns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """面向用户的最终报告中过滤待确认项，仅展示已验证和疑似风险。"""
+        """面向用户展示漏洞。
+
+        默认过滤“待确认”项；但如果过滤后为空而原始漏洞列表非空，说明本次扫描
+        的真实风险可能全部被标记为待确认/候选状态。此时不能在第五/第六部分误写
+        “未发现漏洞”，而是回退展示原始风险项，避免报告丢失真实扫描结果。
+        """
         result: List[Dict[str, Any]] = []
         for v in vulns:
             if ReportGeneratorFixedSafe._normalize_verify_status(v) == "needs_manual_check":
                 continue
             result.append(v)
+        if not result and vulns:
+            return vulns
         return result
 
     @staticmethod
@@ -1335,7 +1564,9 @@ class ReportGeneratorFixedSafe:
         visible_vulns = ReportGeneratorFixedSafe._filter_user_visible_vulns(ctx["vulns"])
         elems = ReportGeneratorFixedSafe._section_title("5. 漏洞详情", styles)
         if not visible_vulns:
-            elems.append(ReportGeneratorFixedSafe._card([[Paragraph("本次扫描未发现已验证或疑似漏洞。", styles["normal"])]], [7.15*inch], ReportGeneratorFixedSafe.COLOR_BLUE_DARK))
+            total = int(ctx.get("vuln_summary", {}).get("total_vulnerabilities", 0) or 0)
+            message = "本次扫描未发现已验证或疑似漏洞。" if total <= 0 else f"本次扫描发现 {total} 项风险，但当前数据未返回可展示的漏洞明细。"
+            elems.append(ReportGeneratorFixedSafe._card([[Paragraph(message, styles["normal"])]], [7.15*inch], ReportGeneratorFixedSafe.COLOR_BLUE_DARK))
             return elems
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         sorted_vulns = sorted(visible_vulns, key=lambda v: severity_order.get(str(v.get("severity", "low")).lower(), 9))
@@ -1349,7 +1580,9 @@ class ReportGeneratorFixedSafe:
         vulns = ReportGeneratorFixedSafe._filter_user_visible_vulns(ctx["vulns"])
         elems = ReportGeneratorFixedSafe._section_title("6. 修复建议", styles)
         if not vulns:
-            elems.append(ReportGeneratorFixedSafe._card([[Paragraph("当前无已验证或疑似漏洞修复项。建议保留周期性巡检和规则库更新。", styles["normal"])]], [7.15*inch], ReportGeneratorFixedSafe.COLOR_BLUE_DARK))
+            total = int(ctx.get("vuln_summary", {}).get("total_vulnerabilities", 0) or 0)
+            message = "当前无已验证或疑似漏洞修复项。建议保留周期性巡检和规则库更新。" if total <= 0 else f"本次扫描发现 {total} 项风险，但当前数据未返回可生成修复建议的漏洞明细。"
+            elems.append(ReportGeneratorFixedSafe._card([[Paragraph(message, styles["normal"])]], [7.15*inch], ReportGeneratorFixedSafe.COLOR_BLUE_DARK))
             return elems
         severity_order = ["critical", "high", "medium", "low", "info"]
         rows = [["优先级", "风险对象", "建议动作"]]
@@ -1446,6 +1679,9 @@ class ReportGeneratorFixedSafe:
             elements: List[Any] = []
             elements.extend(ReportGeneratorFixedSafe._build_cover(ctx, styles))
             elements.extend(ReportGeneratorFixedSafe._build_executive_summary(ctx, styles))
+
+            # 第二部分：风险统计强制从新页开始，避免与执行摘要混排。
+            elements.append(PageBreak())
             elements.extend(ReportGeneratorFixedSafe._build_risk_statistics(ctx, styles))
 
             # 第三部分：资产信息强制从新页开始，避免与前一部分混排。
@@ -1458,6 +1694,9 @@ class ReportGeneratorFixedSafe:
 
             elements.append(PageBreak())
             elements.extend(ReportGeneratorFixedSafe._build_vulnerabilities(ctx, styles))
+
+            # 第六部分：修复建议强制从新页开始，避免与漏洞详情混排。
+            elements.append(PageBreak())
             elements.extend(ReportGeneratorFixedSafe._build_remediation(ctx, styles))
 
             doc.build(
